@@ -23,7 +23,7 @@ type CatalogColumn = "barcode" | "article" | "description" | "color" | "size" | 
 type ColumnMap = Record<CatalogColumn, number>;
 
 const HEADER_ALIASES: Record<CatalogColumn, string[]> = {
-  barcode: ["codigo barras", "codigo de barras", "codigo barra", "codigo de barra", "barcode", "ean", "upc", "codigo"],
+  barcode: ["codigo barras", "codigo de barras", "codigo barra", "codigo de barra", "barcode", "ean", "upc"],
   article: ["articulo", "codigo articulo", "sku", "referencia", "codigo"],
   description: ["descripcion", "producto", "nombre producto", "nombre"],
   color: ["color"],
