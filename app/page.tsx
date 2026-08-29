@@ -30,6 +30,7 @@ type CatalogMeta = { fileName: string; rowCount: number; activatedAt: string | n
 type UploadStage = "reading" | "parsing" | "preparing" | "uploading" | "activating" | "caching";
 type UploadState = { stage: UploadStage; fileName: string; done: number; total: number };
 type UploadFeedback = { kind: "success" | "error"; title: string; message: string } | null;
+type ScanFeedback = { code: string; storeName: string } | null;
 
 const OBSERVATIONS: Observation[] = ["SIN INCIDENCIAS", "PRECIO ERRÓNEO", "MAL ETIQUETADO", "SIN ETIQUETA"];
 const ROLE_LABELS: Record<RoleCode, string> = { employee: "Empleado", manager: "Gerente", supervisor: "Supervisor" };
@@ -171,6 +172,7 @@ export default function Home() {
   const [booting, setBooting] = useState(true);
   const [view, setView] = useState<View>("scanner");
   const [lastProduct, setLastProduct] = useState<Product | null>(null);
+  const [scanFeedback, setScanFeedback] = useState<ScanFeedback>(null);
   const [manualCode, setManualCode] = useState("");
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraStatus, setCameraStatus] = useState("Preparando cámara principal 1×…");
@@ -269,7 +271,7 @@ export default function Home() {
       const {data,error}=await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",targetStore).range(start,start+pageSize-1);
       if(productCacheStoreRef.current!==targetStore)return;
       if(error){setCatalogLoading(false);return;}
-      for(const row of data??[]){const product:Product={id:row.id,storeId:row.store_id,barcode:row.barcode,article:row.article,description:row.description??"",color:row.color||"No especificado",size:row.size||"No especificado",style:row.style||"No especificado",amount:Number(row.amount)};for(const candidate of getBarcodeCandidates(product.barcode))nextCache.set(candidate,product);loadedProducts+=1;}
+      for(const row of data??[]){const product:Product={id:row.id,storeId:row.store_id,barcode:row.barcode,article:row.article,description:row.description??"",color:row.color||"No especificado",size:row.size||"No especificado",style:row.style||"No especificado",amount:Number(row.amount)};for(const candidate of getBarcodeCandidates(product.barcode))nextCache.set(candidate,product);const articleKey=normalizeBarcode(product.article);if(articleKey&&!nextCache.has(articleKey))nextCache.set(articleKey,product);loadedProducts+=1;}
       if((data?.length??0)<pageSize)break;
     }
     if(productCacheStoreRef.current!==targetStore)return;
@@ -322,6 +324,7 @@ export default function Home() {
   function selectStore(nextStoreId:string){
     stopCamera();
     setLastProduct(null);
+    setScanFeedback(null);
     setCatalogMeta(null);
     setCachedProductCount(0);
     productCacheReadyRef.current=false;
@@ -402,12 +405,20 @@ export default function Home() {
     if(!product&&!productCacheReadyRef.current){
       if(scanBusyRef.current)return;
       scanBusyRef.current=true;
-      const { data, error } = await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",storeId).in("barcode",candidates).limit(1).maybeSingle();
+      let { data, error } = await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",storeId).in("barcode",candidates).limit(1).maybeSingle();
+      if(!error&&!data){const articleLookup=await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",storeId).eq("article",normalized).limit(1).maybeSingle();data=articleLookup.data;error=articleLookup.error;}
       scanBusyRef.current=false;
       if(!error&&data)product={id:data.id,storeId:data.store_id,barcode:data.barcode,article:data.article,description:data.description??"",color:data.color||"No especificado",size:data.size||"No especificado",style:data.style||"No especificado",amount:Number(data.amount)};
     }
-    if (!product) return void toast.error("Código no encontrado",{description:`${normalized} no existe en el catálogo de ${currentStore?.name ?? "esta tienda"}.`});
-    setLastProduct(product); setManualCode(""); if(navigator.vibrate)navigator.vibrate(80);
+    if (!product) {
+      const storeName=currentStore?.name??"esta tienda";
+      setLastProduct(null);
+      setScanFeedback({code:normalized,storeName});
+      setManualCode("");
+      if(navigator.vibrate)navigator.vibrate([70,60,70]);
+      return void toast.warning("Código leído correctamente",{id:"scanner-result",description:`${normalized} no está incluido en el Excel activo de ${storeName}.`});
+    }
+    setScanFeedback(null);toast.dismiss("scanner-result");setLastProduct(product); setManualCode(""); if(navigator.vibrate)navigator.vibrate(80);
     if(evaluation)void saveEvaluationProduct(product);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[storeId,currentStore?.name,isEvaluator,sessionUserId]);
@@ -455,7 +466,7 @@ export default function Home() {
       controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
         if(!result)return;
         const scanned=normalizeBarcode(result.getText()),now=Date.now();
-        if(!scanned||(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<1200))return;
+        if(!scanned||(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<5000))return;
         lastScanRef.current={code:scanned,at:now};
         void registerCode(scanned,evaluation);
       });
@@ -544,7 +555,7 @@ export default function Home() {
     const blob=await Packer.toBlob(doc),href=URL.createObjectURL(blob),anchor=document.createElement("a");anchor.href=href;anchor.download=`Evaluacion_${(currentStore?.name??"tienda").replace(/[^a-z0-9]+/gi,"_")}.docx`;anchor.click();setTimeout(()=>URL.revokeObjectURL(href),1000);toast.success("Informe editable generado");
   }
 
-  async function signOut(){stopCamera();setLastProduct(null);setEvaluationItems([]);await supabase.auth.signOut();}
+  async function signOut(){stopCamera();setLastProduct(null);setScanFeedback(null);setEvaluationItems([]);await supabase.auth.signOut();}
 
   if(booting)return <main className="loading-screen"><Image src="/canaima-logo.svg" alt="Grupo Canaima" width={480} height={250} priority/><LoaderCircle className="spin" size={26}/><span>Preparando ScanControl…</span></main>;
   if(!sessionUserId)return <LoginScreen/>;
@@ -555,7 +566,7 @@ export default function Home() {
     <main className="workspace"><header className="topbar"><button className="mobile-menu" onClick={()=>setMobileMenu(true)} aria-label="Abrir menú"><Menu size={22}/></button><div className="topbar-title"><p className="eyebrow">GRUPO CANAIMA · OPERACIONES</p><h1>{viewTitle}</h1></div><div className="topbar-controls">{profile.role==="supervisor"&&view!=="users"&&<><div className="desktop-store-switcher"><Select value={storeId} onValueChange={selectStore}><SelectTrigger className="store-select"><Store size={16}/><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((item)=><SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div><label className="mobile-store-switcher" aria-label="Seleccionar tienda"><Store size={18}/><select value={storeId} onChange={(event)=>selectStore(event.target.value)} aria-label="Seleccionar tienda">{stores.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label></>}<Badge className="role-badge"><ShieldCheck size={14}/>{roleLabel}</Badge></div></header>
 
       {view==="scanner"&&<section className="page-content scanner-layout"><div className="scan-panel"><div className="section-heading"><div><Badge className="status-badge"><span className={`status-dot ${catalogLoading?"status-dot-loading":""}`}/> {catalogLoading?"Preparando catálogo…":`Lector instantáneo · ${cachedProductCount.toLocaleString("es-ES")} productos`}</Badge><h2>Escaneo continuo</h2><p>Apunta la cámara al código. El resultado aparecerá al instante y el lector seguirá activo.</p></div><div className="store-pill"><Store size={16}/><span>{currentStore?.name}</span></div></div>{cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline/><div className="camera-mode" aria-live="polite"><Camera size={14}/>{cameraStatus}</div><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Cámara principal 1× · EAN, UPC y Code 128</small></button>}<div className="manual-entry"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div></div>
-        <div className={`result-panel ${lastProduct?"":"result-empty"}`}>{lastProduct?<><div className="result-success"><CheckCircle2 size={20}/><span>Producto encontrado</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO / ARTÍCULO</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div><span>TAMAÑO</span><strong>{lastProduct.size}</strong></div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div></>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div></section>}
+        <div className={`result-panel ${lastProduct?"":scanFeedback?"result-missing":"result-empty"}`}>{lastProduct?<><div className="result-success"><CheckCircle2 size={20}/><span>Producto encontrado</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO / ARTÍCULO</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div><span>TAMAÑO</span><strong>{lastProduct.size}</strong></div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div></>:scanFeedback?<div className="missing-product"><div className="missing-head"><Barcode size={21}/><div><strong>Código leído correctamente</strong><span>El lector y la cámara están funcionando</span></div></div><div className="missing-code"><span>CÓDIGO CAPTURADO</span><strong>{scanFeedback.code}</strong></div><div className="missing-copy"><h3>Esta prenda no está en el Excel activo</h3><p>No es posible mostrar artículo, color, tamaño, estilo ni precio porque el archivo de <strong>{scanFeedback.storeName}</strong> no contiene este código.</p></div><div className="missing-note"><FileSpreadsheet size={20}/><span>Carga el inventario que incluya esta prenda o comprueba que corresponda a la tienda seleccionada.</span></div></div>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div></section>}
 
       {view==="evaluation"&&isEvaluator&&<section className="page-content evaluation-page"><div className="evaluation-toolbar"><div><Badge variant="outline">{evaluationId?"Evaluación en curso":"Lista para iniciar"}</Badge><h2>Registro de verificación</h2><p>Cada lectura se guarda con “Sin incidencias” y puede corregirse al instante.</p></div><div className="toolbar-actions"><Button variant="outline" onClick={addWithoutLabel}>Registrar sin etiqueta</Button><Button onClick={()=>startCamera(true)}><Camera size={17}/> Escanear continuamente</Button></div></div>{cameraOpen&&<div className="evaluation-camera"><video ref={videoRef} muted playsInline/><div><strong>{cameraStatus}</strong><span>Los productos se agregan y guardan automáticamente.</span></div><Button variant="outline" onClick={stopCamera}>Detener</Button></div>}<div className="summary-grid">{summary.map((item)=><div key={item.observation}><span>{item.observation}</span><strong>{item.count}</strong></div>)}</div><div className="data-card"><div className="data-card-head"><div><strong>Productos evaluados</strong><span>{evaluationItems.length} registros guardados</span></div><Button variant="outline" onClick={exportEvaluation} disabled={!evaluationItems.length}><Download size={17}/> Descargar Word editable</Button></div><div className="evaluation-table-wrap"><table className="evaluation-table"><thead><tr><th>Código / artículo</th><th>Descripción</th><th>Detalles</th><th>Monto</th><th>Observación</th><th/></tr></thead><tbody>{evaluationItems.length?evaluationItems.map((item)=><tr key={item.rowId}><td><strong>{item.article}</strong><span>{item.scannedAt}</span></td><td>{item.description}</td><td>{item.color} · {item.size}</td><td><strong>{money.format(item.amount)}</strong></td><td><Select value={item.observation} onValueChange={(value)=>void changeObservation(item.rowId,value as Observation)}><SelectTrigger className="observation"><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></td><td><button className="delete-row" onClick={()=>void deleteEvaluationItem(item.rowId)}><X size={16}/></button></td></tr>):<tr><td colSpan={6} className="empty-table">Aún no hay productos en esta evaluación.</td></tr>}</tbody></table></div></div></section>}
 
