@@ -1,0 +1,103 @@
+name: Apply scanner and evaluation fix
+
+on:
+  push:
+    paths:
+      - ".github/workflows/apply-scanner-evaluation-fix.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Apply targeted source changes
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"Expected exactly one match for {label}, found {count}")
+              return text.replace(old, new, 1)
+
+          page_path = Path("app/page.tsx")
+          page = page_path.read_text()
+
+          page = replace_once(
+              page,
+              'import { Barcode, Building2, Camera, CheckCircle2, ChevronRight, ClipboardCheck, Download, FileSpreadsheet, KeyRound, LoaderCircle, LockKeyhole, LogOut, Mail, Menu, PackageSearch, Plus, RefreshCw, ScanLine, ShieldCheck, Store, Upload, UserRound, UserPlus, Users, X } from "lucide-react";',
+              'import { Barcode, Building2, Camera, CheckCircle2, ChevronRight, ClipboardCheck, Download, FileSpreadsheet, Hand, KeyRound, LoaderCircle, LockKeyhole, LogOut, Mail, Menu, PackageSearch, Plus, RefreshCw, ScanLine, ShieldCheck, Store, Upload, UserRound, UserPlus, Users, X } from "lucide-react";',
+              "lucide Hand import",
+          )
+
+          page = replace_once(
+              page,
+              '      for(const row of data??[]){const product:Product={id:row.id,storeId:row.store_id,barcode:row.barcode,article:row.article,description:row.description??"",color:row.color||"No especificado",size:row.size||"No especificado",style:row.style||"No especificado",amount:Number(row.amount)};for(const candidate of getBarcodeCandidates(product.barcode))nextCache.set(candidate,product);const articleKey=normalizeBarcode(product.article);if(articleKey&&!nextCache.has(articleKey))nextCache.set(articleKey,product);loadedProducts+=1;}',
+              '      for(const row of data??[]){const product:Product={id:row.id,storeId:row.store_id,barcode:row.barcode,article:row.article,description:row.description??"",color:row.color||"No especificado",size:row.size||"No especificado",style:row.style||"No especificado",amount:Number(row.amount)};for(const candidate of getBarcodeCandidates(product.barcode))nextCache.set(candidate,product);loadedProducts+=1;}',
+              "barcode-only product cache",
+          )
+
+          page = replace_once(
+              page,
+              '      if(!error&&!data){const articleLookup=await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",storeId).eq("article",normalized).limit(1).maybeSingle();data=articleLookup.data;error=articleLookup.error;}\n',
+              '',
+              "remove article fallback lookup",
+          )
+
+          old_actions = '  async function changeObservation(rowId:string,observation:Observation){const previous=evaluationItems;setEvaluationItems((items)=>items.map((item)=>item.rowId===rowId?{...item,observation}:item));const {error}=await supabase.from("evaluation_items").update({observation}).eq("id",rowId);if(error){setEvaluationItems(previous);toast.error("No se guardó la observación");}}\n  async function deleteEvaluationItem(rowId:string){const {error}=await supabase.from("evaluation_items").delete().eq("id",rowId);if(error)return void toast.error("No se pudo eliminar");setEvaluationItems((items)=>items.filter((item)=>item.rowId!==rowId));}\n\n  const summary=useMemo(()=>OBSERVATIONS.map((observation)=>({observation,count:evaluationItems.filter((item)=>item.observation===observation).length})),[evaluationItems]);'
+          new_actions = '''  async function changeObservation(rowId:string,observation:Observation){const previous=evaluationItems;setEvaluationItems((items)=>items.map((item)=>item.rowId===rowId?{...item,observation}:item));const {error}=await supabase.from("evaluation_items").update({observation}).eq("id",rowId);if(error){setEvaluationItems(previous);toast.error("No se guardó la observación");}}\n  async function markLatestObservation(observation:"PRECIO ERRÓNEO"|"MAL ETIQUETADO"){\n    const target=evaluationItems.find((item)=>item.observation!=="SIN ETIQUETA");\n    if(!target)return void toast.warning("Escanea un producto primero",{description:"La incidencia se aplica al último producto escaneado."});\n    const previous=evaluationItems;\n    setEvaluationItems((items)=>items.map((item)=>item.rowId===target.rowId?{...item,observation}:item));\n    const {error}=await supabase.from("evaluation_items").update({observation}).eq("id",target.rowId);\n    if(error){setEvaluationItems(previous);return void toast.error("No se guardó la incidencia");}\n    toast.success(observation==="PRECIO ERRÓNEO"?"Marcado como precio erróneo":"Marcado como mal etiquetado",{description:target.article});\n  }\n  async function deleteEvaluationItem(rowId:string){const {error}=await supabase.from("evaluation_items").delete().eq("id",rowId);if(error)return void toast.error("No se pudo eliminar");setEvaluationItems((items)=>items.filter((item)=>item.rowId!==rowId));}\n\n  const summary=useMemo(()=>{\n    const priceErrors=evaluationItems.filter((item)=>item.observation==="PRECIO ERRÓNEO").length;\n    const mislabeled=evaluationItems.filter((item)=>item.observation==="MAL ETIQUETADO").length;\n    const withoutLabel=evaluationItems.filter((item)=>item.observation==="SIN ETIQUETA").length;\n    const withoutIncidents=Math.max(0,evaluationItems.length-priceErrors-mislabeled-withoutLabel);\n    return [\n      {observation:"SIN INCIDENCIAS" as Observation,count:withoutIncidents},\n      {observation:"PRECIO ERRÓNEO" as Observation,count:priceErrors},\n      {observation:"MAL ETIQUETADO" as Observation,count:mislabeled},\n      {observation:"SIN ETIQUETA" as Observation,count:withoutLabel},\n    ];\n  },[evaluationItems]);'''
+          page = replace_once(page, old_actions, new_actions, "quick incidence actions and calculated summary")
+
+          old_toolbar = '<div className="toolbar-actions"><Button variant="outline" onClick={addWithoutLabel}>Registrar sin etiqueta</Button><Button onClick={()=>startCamera(true)}><Camera size={17}/> Escanear continuamente</Button></div>'
+          new_toolbar = '<div className="toolbar-actions"><Button variant="outline" onClick={addWithoutLabel}><Hand size={17}/> Registrar sin etiqueta</Button><Button variant="outline" onClick={()=>void markLatestObservation("PRECIO ERRÓNEO")}>Precio erróneo</Button><Button variant="outline" onClick={()=>void markLatestObservation("MAL ETIQUETADO")}>Mal etiquetado</Button><Button onClick={()=>startCamera(true)}><Camera size={17}/> Escanear continuamente</Button></div>'
+          page = replace_once(page, old_toolbar, new_toolbar, "evaluation toolbar buttons")
+          page_path.write_text(page)
+
+          catalog_path = Path("app/lib/catalog-import.ts")
+          catalog = catalog_path.read_text()
+          catalog = replace_once(
+              catalog,
+              '  barcode: ["codigo barras", "codigo de barras", "codigo barra", "codigo de barra", "barcode", "ean", "upc", "codigo"],',
+              '  barcode: ["codigo barras", "codigo de barras", "codigo barra", "codigo de barra", "barcode", "ean", "upc"],',
+              "strict barcode header aliases",
+          )
+          catalog_path.write_text(catalog)
+
+          css_path = Path("app/globals.css")
+          css = css_path.read_text()
+          css = replace_once(
+              css,
+              '.toolbar-actions{display:flex;gap:9px}',
+              '.toolbar-actions{display:flex;gap:9px;flex-wrap:wrap;justify-content:flex-end}',
+              "toolbar wrapping",
+          )
+          css_path.write_text(css)
+          PY
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Build application
+        run: npm run build
+
+      - name: Commit verified changes and remove one-time workflow
+        shell: bash
+        run: |
+          git config user.name "Tamairisluna"
+          git config user.email "tamairislunadiaz893@gmail.com"
+          git rm .github/workflows/apply-scanner-evaluation-fix.yml
+          git add app/page.tsx app/lib/catalog-import.ts app/globals.css package-lock.json
+          git commit -m "Corrige código de barras y opciones de evaluación"
+          git push origin main
