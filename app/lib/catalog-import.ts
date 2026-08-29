@@ -23,8 +23,8 @@ type CatalogColumn = "barcode" | "article" | "description" | "color" | "size" | 
 type ColumnMap = Record<CatalogColumn, number>;
 
 const HEADER_ALIASES: Record<CatalogColumn, string[]> = {
-  barcode: ["codigo barras", "codigo de barras", "codigo barra", "codigo de barra", "barcode", "ean", "upc"],
-  article: ["articulo", "codigo articulo", "sku", "referencia", "codigo"],
+  barcode: ["codigo barras"],
+  article: ["articulo"],
   description: ["descripcion", "producto", "nombre producto", "nombre"],
   color: ["color"],
   size: ["tamano", "talla", "size"],
@@ -76,7 +76,9 @@ export function parseCatalogWorkbook(workbook: WorkBook): ParsedCatalog {
   for (const sourceSheet of workbook.SheetNames) {
     const sheet = workbook.Sheets[sourceSheet];
     if (!sheet) continue;
-    const rows = utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: true, blankrows: false });
+    // Read displayed cell values so identifiers stay as text. This preserves
+    // leading zeroes when Excel stores them with a text/identifier format.
+    const rows = utils.sheet_to_json<unknown[]>(sheet, { header: 1, defval: "", raw: false, blankrows: false });
     const headerLimit = Math.min(rows.length, 30);
     let headerIndex = -1;
     let columns: ColumnMap | null = null;
@@ -125,7 +127,7 @@ export function parseCatalogWorkbook(workbook: WorkBook): ParsedCatalog {
     }
   }
 
-  throw new Error("No se encontraron las columnas ‘Código barras’ y ‘Monto a Pagar’ ni productos válidos en el Excel.");
+  throw new Error("El Excel debe contener exactamente las columnas ‘Código barras’ y ‘Monto a Pagar’, con productos válidos.");
 }
 
 export function getImportErrorMessage(error: unknown) {
