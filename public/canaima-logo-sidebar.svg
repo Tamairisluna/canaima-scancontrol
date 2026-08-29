@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 100" role="img" aria-labelledby="title">
+  <title id="title">Grupo Canaima</title>
+  <g fill="none" stroke="#ffffff" stroke-width="13">
+    <path d="M15 46A40 40 0 0 1 95 46"/>
+    <path d="M95 55A40 40 0 0 1 15 55"/>
+  </g>
+  <path d="M72 36A22 22 0 1 0 72 65" fill="none" stroke="#bfd532" stroke-width="10"/>
+  <text x="122" y="61" fill="#ffffff" font-family="Montserrat,Arial,Helvetica,sans-serif" font-size="31" font-weight="500" letter-spacing="2.5">GRUPO</text>
+  <circle cx="262" cy="51" r="5" fill="#bfd532"/>
+  <text x="278" y="61" fill="#ffffff" font-family="Montserrat,Arial,Helvetica,sans-serif" font-size="31" font-weight="500" letter-spacing="2.5">CANAIMA</text>
+</svg>

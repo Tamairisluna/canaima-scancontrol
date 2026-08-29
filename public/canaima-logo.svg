@@ -1,8 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 190" role="img" aria-labelledby="title">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 250" role="img" aria-labelledby="title">
   <title id="title">Grupo Canaima</title>
-  <g fill="none" stroke="#073b5c" stroke-width="28"><path d="M178 86a62 62 0 0 1 124 0"/><path d="M302 106a62 62 0 0 1-124 0"/></g>
-  <path fill="#bfd532" d="M259 78a34 34 0 1 0 0 38l-17-17a10 10 0 1 1 0-4z"/>
-  <text x="226" y="170" text-anchor="end" fill="#073b5c" font-family="Montserrat,Arial,Helvetica,sans-serif" font-size="30" font-weight="400" letter-spacing="2.5">GRUPO</text>
-  <circle cx="240" cy="161" r="5" fill="#bfd532"/>
-  <text x="254" y="170" fill="#073b5c" font-family="Montserrat,Arial,Helvetica,sans-serif" font-size="30" font-weight="400" letter-spacing="2.5">CANAIMA</text>
+  <g fill="none" stroke="#073b5c" stroke-width="28">
+    <path d="M170 90A70 70 0 0 1 310 90"/>
+    <path d="M310 106A70 70 0 0 1 170 106"/>
+  </g>
+  <path d="M270 73A39 39 0 1 0 270 123" fill="none" stroke="#bfd532" stroke-width="18"/>
+  <text x="226" y="230" text-anchor="end" fill="#073b5c" font-family="Montserrat,Arial,Helvetica,sans-serif" font-size="30" font-weight="400" letter-spacing="2.5">GRUPO</text>
+  <circle cx="240" cy="221" r="5" fill="#bfd532"/>
+  <text x="254" y="230" fill="#073b5c" font-family="Montserrat,Arial,Helvetica,sans-serif" font-size="30" font-weight="400" letter-spacing="2.5">CANAIMA</text>
 </svg>

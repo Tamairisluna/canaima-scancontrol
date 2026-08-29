@@ -15,3 +15,11 @@ export const supabase = createClient(supabaseUrl, supabasePublishableKey, {
     detectSessionInUrl: true,
   },
 });
+
+export const createProvisioningClient = () => createClient(supabaseUrl, supabasePublishableKey, {
+  auth: {
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+  },
+});

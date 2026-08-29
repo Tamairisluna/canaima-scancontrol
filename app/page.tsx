@@ -1,24 +1,26 @@
 "use client";
 
+import Image from "next/image";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BrowserMultiFormatReader, type IScannerControls } from "@zxing/browser";
 import { read, utils } from "xlsx";
 import { AlignmentType, BorderStyle, Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
-import { Barcode, Building2, Camera, CheckCircle2, ChevronRight, ClipboardCheck, Download, FileSpreadsheet, LoaderCircle, LockKeyhole, LogOut, Menu, PackageSearch, RefreshCw, ScanLine, ShieldCheck, Store, Upload, UserRound, Users, X } from "lucide-react";
+import { Barcode, Building2, Camera, CheckCircle2, ChevronRight, ClipboardCheck, Download, FileSpreadsheet, KeyRound, LoaderCircle, LockKeyhole, LogOut, Mail, Menu, PackageSearch, Plus, RefreshCw, ScanLine, ShieldCheck, Store, Upload, UserRound, UserPlus, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Toaster } from "@/components/ui/sonner";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { supabase } from "@/app/lib/supabase";
+import { createProvisioningClient, supabase } from "@/app/lib/supabase";
 
 type RoleCode = "employee" | "manager" | "supervisor";
 type View = "scanner" | "evaluation" | "catalog" | "users";
 type Observation = "SIN INCIDENCIAS" | "PRECIO ERRÓNEO" | "MAL ETIQUETADO" | "SIN ETIQUETA";
 type StoreRecord = { id: string; name: string; slug: string };
-type Profile = { id: string; full_name: string | null; role: RoleCode; store_id: string | null; is_active: boolean };
+type Profile = { id: string; full_name: string | null; role: RoleCode; store_id: string | null; is_active: boolean; is_owner: boolean };
 type ManagedProfile = Profile & { email: string | null; created_at: string | null };
 type Product = { id: string | null; storeId: string; barcode: string; article: string; description: string; color: string; size: string; style: string; amount: number };
 type EvaluationItem = Product & { rowId: string; observation: Observation; scannedAt: string };
@@ -35,10 +37,8 @@ function NavItem({ icon: Icon, label, active, onClick }: { icon: typeof ScanLine
 }
 
 function LoginScreen() {
-  const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [fullName, setFullName] = useState("");
   const [busy, setBusy] = useState(false);
   const [formMessage, setFormMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
 
@@ -47,34 +47,22 @@ function LoginScreen() {
     setBusy(true);
     setFormMessage(null);
     try {
-      if (mode === "login") {
-        const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-        if (error) {
-          const text = error.code === "email_not_confirmed"
-            ? "Debes confirmar primero el enlace enviado a tu correo."
-            : error.code === "invalid_credentials"
-              ? "El correo o la contraseña no son correctos."
-              : "No se pudo iniciar sesión. Intenta nuevamente.";
-          setFormMessage({ kind: "error", text });
-          toast.error("No se pudo iniciar sesión", { description: text });
-          return;
-        }
-        if (!data.session) {
-          setFormMessage({ kind: "error", text: "No se recibió una sesión válida. Intenta nuevamente." });
-          return;
-        }
-        setFormMessage({ kind: "success", text: "Acceso correcto. Cargando tu perfil…" });
-      } else {
-        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { full_name: fullName.trim() } } });
-        if (error) {
-          setFormMessage({ kind: "error", text: error.message });
-          toast.error("No se pudo crear la cuenta", { description: error.message });
-          return;
-        }
-        const text = data.session ? "Cuenta creada correctamente." : "Cuenta creada. Revisa tu correo y confirma el enlace antes de entrar.";
-        setFormMessage({ kind: "success", text });
-        toast.success("Cuenta creada", { description: text });
+      const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (error) {
+        const text = error.code === "email_not_confirmed"
+          ? "Debes confirmar primero el enlace enviado a tu correo."
+          : error.code === "invalid_credentials"
+            ? "El correo o la contraseña no son correctos."
+            : "No se pudo iniciar sesión. Intenta nuevamente.";
+        setFormMessage({ kind: "error", text });
+        toast.error("No se pudo iniciar sesión", { description: text });
+        return;
       }
+      if (!data.session) {
+        setFormMessage({ kind: "error", text: "No se recibió una sesión válida. Intenta nuevamente." });
+        return;
+      }
+      setFormMessage({ kind: "success", text: "Acceso correcto. Cargando tu perfil…" });
     } catch {
       const text = "No fue posible conectar con el servicio. Revisa tu conexión e intenta nuevamente.";
       setFormMessage({ kind: "error", text });
@@ -84,18 +72,24 @@ function LoginScreen() {
     }
   }
 
-  return <main className="login-screen"><Toaster position="top-center" richColors/><section className="login-card">
-    <div className="login-brand"><img src="/canaima-logo.svg" alt="Grupo Canaima"/><span>SCANCONTROL</span><small>Control inteligente de productos</small></div>
-    <div className="login-copy"><Badge className="login-badge"><LockKeyhole size={13}/> Acceso protegido</Badge><h1>{mode === "login" ? "Bienvenido" : "Crear cuenta"}</h1><p>{mode === "login" ? "Ingresa con las credenciales asignadas por Grupo Canaima." : "Registra la cuenta y espera que un supervisor asigne tu tienda y función."}</p></div>
-    <form onSubmit={submit} className="login-form">
-      {mode === "signup" && <label>Nombre completo<Input value={fullName} onChange={(event)=>setFullName(event.target.value)} required placeholder="Nombre y apellido" autoComplete="name"/></label>}
-      <label>Correo electrónico<Input value={email} onChange={(event)=>setEmail(event.target.value)} required type="email" placeholder="usuario@empresa.com" autoComplete="email"/></label>
-      <label>Contraseña<Input value={password} onChange={(event)=>setPassword(event.target.value)} required type="password" minLength={8} placeholder="Mínimo 8 caracteres" autoComplete={mode === "login" ? "current-password" : "new-password"}/></label>
-      <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="spin" size={17}/>} {mode === "login" ? "Iniciar sesión" : "Registrar cuenta"}</Button>
-      {formMessage && <p className={`auth-message auth-message-${formMessage.kind}`} role={formMessage.kind === "error" ? "alert" : "status"}>{formMessage.text}</p>}
-    </form>
-    <button className="login-switch" type="button" onClick={()=>{setMode(mode === "login" ? "signup" : "login");setFormMessage(null);}}>{mode === "login" ? "¿Primera vez? Crear una cuenta" : "Ya tengo una cuenta"}</button>
-  </section><aside className="login-side"><div className="login-symbol"><ScanLine size={84}/></div><h2>Consulta precisa.<br/>Evaluación confiable.</h2><p>Catálogos y precios independientes para cada tienda.</p><div className="login-stat"><strong>16</strong><span>tiendas conectadas</span></div></aside></main>;
+  return <main className="login-screen"><Toaster position="top-center" richColors/>
+    <aside className="login-side">
+      <Image src="/canaima-logo-sidebar.svg" alt="Grupo Canaima" className="login-side-logo" width={520} height={100} priority/>
+      <div className="login-side-copy"><div className="login-symbol"><ScanLine size={45}/></div><p className="login-kicker">PLATAFORMA OPERATIVA</p><h2>Consulta precisa.<br/>Evaluación confiable.</h2><p>Catálogos y precios independientes para cada tienda, disponibles desde cualquier dispositivo.</p></div>
+      <div className="login-stat"><strong>16</strong><span>tiendas conectadas<br/>en una sola plataforma</span></div>
+    </aside>
+    <section className="login-panel"><div className="login-card">
+      <div className="login-brand"><Image src="/canaima-logo.svg" alt="Grupo Canaima" width={480} height={250} priority/><div><span>SCANCONTROL</span><small>Control inteligente de productos</small></div></div>
+      <div className="login-copy"><Badge className="login-badge"><LockKeyhole size={13}/> Acceso protegido</Badge><h1>Bienvenido</h1><p>Ingresa con las credenciales asignadas por el administrador de Grupo Canaima.</p></div>
+      <form onSubmit={submit} className="login-form">
+        <label><span><Mail size={14}/> Correo electrónico</span><Input value={email} onChange={(event)=>setEmail(event.target.value)} required type="email" placeholder="usuario@empresa.com" autoComplete="email"/></label>
+        <label><span><KeyRound size={14}/> Contraseña</span><Input value={password} onChange={(event)=>setPassword(event.target.value)} required type="password" minLength={8} placeholder="Ingresa tu contraseña" autoComplete="current-password"/></label>
+        <Button className="login-submit" type="submit" disabled={busy}>{busy?<><LoaderCircle className="spin" size={17}/> Iniciando…</>:<><LockKeyhole size={17}/> Iniciar sesión</>}</Button>
+        {formMessage && <p className={`auth-message auth-message-${formMessage.kind}`} role={formMessage.kind === "error" ? "alert" : "status"}>{formMessage.text}</p>}
+      </form>
+      <div className="login-admin-note"><ShieldCheck size={17}/><p><strong>Acceso administrado</strong><span>Las cuentas son creadas exclusivamente por Romer.</span></p></div>
+    </div></section>
+  </main>;
 }
 
 export default function Home() {
@@ -117,6 +111,9 @@ export default function Home() {
   const [usersLoading, setUsersLoading] = useState(false);
   const [usersError, setUsersError] = useState<string | null>(null);
   const [savingUserId, setSavingUserId] = useState<string | null>(null);
+  const [userDialogOpen, setUserDialogOpen] = useState(false);
+  const [creatingUser, setCreatingUser] = useState(false);
+  const [newUser, setNewUser] = useState({ fullName:"", email:"", password:"", role:"employee" as RoleCode, storeId:"" });
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [cachedProductCount, setCachedProductCount] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -131,15 +128,22 @@ export default function Home() {
 
   const currentStore = stores.find((item)=>item.id === storeId) ?? null;
   const isEvaluator = profile?.role === "manager" || profile?.role === "supervisor";
-  const roleLabel = profile ? ROLE_LABELS[profile.role] : "";
+  const isOwner = Boolean(profile?.is_owner);
+  const roleLabel = isOwner ? "Administrador general" : profile ? ROLE_LABELS[profile.role] : "";
   const displayName = profile?.full_name || "Usuario";
   const initials = displayName.split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("") || "GC";
 
   const hydrate = useCallback(async (userId: string) => {
     setBooting(true);
-    const { data: profileData, error: profileError } = await supabase.from("profiles").select("id,full_name,role,store_id,is_active").eq("id", userId).maybeSingle();
-    if (profileError || !profileData) { setProfile(null); setBooting(false); return; }
-    const nextProfile = profileData as Profile;
+    const { data: ownerProfileData, error: ownerProfileError } = await supabase.from("profiles").select("id,full_name,role,store_id,is_active,is_owner").eq("id", userId).maybeSingle();
+    let profileData=ownerProfileData as Profile|null;
+    if(ownerProfileError){
+      const {data:fallbackProfile,error:fallbackError}=await supabase.from("profiles").select("id,full_name,role,store_id,is_active").eq("id",userId).maybeSingle();
+      if(fallbackError||!fallbackProfile){setProfile(null);setBooting(false);return;}
+      profileData={...(fallbackProfile as Omit<Profile,"is_owner">),is_owner:false};
+    }
+    if(!profileData){setProfile(null);setBooting(false);return;}
+    const nextProfile = profileData;
     setProfile(nextProfile);
     const { data: storeData } = await supabase.from("stores").select("id,name,slug").eq("is_active", true).order("name");
     const nextStores = (storeData ?? []) as StoreRecord[];
@@ -211,14 +215,14 @@ export default function Home() {
   const loadManagedProfiles = useCallback(async () => {
     setUsersLoading(true);
     setUsersError(null);
-    const { data, error } = await supabase.rpc("supervisor_list_users");
+    const { data, error } = await supabase.rpc("owner_list_users");
     if (error) {
       setManagedProfiles([]);
       setUsersError("El módulo de usuarios todavía debe activarse en Supabase.");
       setUsersLoading(false);
       return;
     }
-    const rows = (data ?? []) as Array<{ id:string; email:string|null; full_name:string|null; role:string; store_id:string|null; is_active:boolean; created_at:string|null }>;
+    const rows = (data ?? []) as Array<{ id:string; email:string|null; full_name:string|null; role:string; store_id:string|null; is_active:boolean; is_owner:boolean; created_at:string|null }>;
     setManagedProfiles(rows.map((row)=>({ ...row, role:row.role as RoleCode })));
     setUsersLoading(false);
   }, []);
@@ -234,10 +238,10 @@ export default function Home() {
   }, [storeId, sessionUserId, isEvaluator, loadCatalogMeta, loadProductCache, loadEvaluation]);
 
   useEffect(()=>{
-    if (view !== "users" || profile?.role !== "supervisor") return;
+    if (view !== "users" || !isOwner) return;
     const task=window.setTimeout(()=>void loadManagedProfiles(),0);
     return()=>window.clearTimeout(task);
-  },[view,profile?.role,loadManagedProfiles]);
+  },[view,isOwner,loadManagedProfiles]);
 
   function selectStore(nextStoreId:string){
     stopCamera();
@@ -259,7 +263,7 @@ export default function Home() {
     const nextRole=patch.role??target.role;
     const nextStore=nextRole==="supervisor"?null:(patch.store_id!==undefined?patch.store_id:(target.store_id??stores[0]?.id??null));
     const nextActive=patch.is_active??target.is_active;
-    if(userId===sessionUserId&&(nextRole!=="supervisor"||!nextActive))return void toast.error("No puedes quitar tu propio acceso de supervisor");
+    if(target.is_owner&&(nextRole!=="supervisor"||!nextActive))return void toast.error("No puedes quitar el acceso del propietario");
     if(nextRole!=="supervisor"&&!nextStore)return void toast.error("Selecciona una tienda para esta cuenta");
     const previous=managedProfiles;
     setSavingUserId(userId);
@@ -268,6 +272,29 @@ export default function Home() {
     if(error){setManagedProfiles(previous);toast.error("No se pudo guardar el acceso",{description:error.message});}
     else toast.success("Acceso actualizado",{description:target.full_name||target.email||"Usuario"});
     setSavingUserId(null);
+  }
+
+  async function createManagedUser(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();
+    if(!isOwner)return;
+    const fullName=newUser.fullName.trim(),email=newUser.email.trim().toLowerCase();
+    const assignedStore=newUser.role==="supervisor"?null:(newUser.storeId||stores[0]?.id||null);
+    if(!fullName||!email||newUser.password.length<8)return void toast.error("Completa correctamente todos los datos");
+    if(newUser.role!=="supervisor"&&!assignedStore)return void toast.error("Selecciona una tienda");
+    setCreatingUser(true);
+    try{
+      const provisioningClient=createProvisioningClient();
+      const {data,error}=await provisioningClient.auth.signUp({email,password:newUser.password,options:{data:{full_name:fullName}}});
+      if(error)throw error;
+      if(!data.user)throw new Error("No se recibió el identificador de la cuenta");
+      const {error:profileUpdateError}=await supabase.from("profiles").update({full_name:fullName,role:newUser.role,store_id:assignedStore,is_active:true}).eq("id",data.user.id);
+      if(profileUpdateError)throw profileUpdateError;
+      setNewUser({fullName:"",email:"",password:"",role:"employee",storeId:""});
+      setUserDialogOpen(false);
+      await loadManagedProfiles();
+      toast.success("Usuario creado",{description:`${fullName} recibirá un correo para confirmar su cuenta.`});
+    }catch(error){toast.error("No se pudo crear el usuario",{description:error instanceof Error?error.message:"Intenta nuevamente."});}
+    finally{setCreatingUser(false);}
   }
 
   async function ensureEvaluation() {
@@ -360,12 +387,12 @@ export default function Home() {
 
   async function signOut(){stopCamera();setLastProduct(null);setEvaluationItems([]);await supabase.auth.signOut();}
 
-  if(booting)return <main className="loading-screen"><img src="/canaima-logo.svg" alt="Grupo Canaima"/><LoaderCircle className="spin" size={26}/><span>Preparando ScanControl…</span></main>;
+  if(booting)return <main className="loading-screen"><Image src="/canaima-logo.svg" alt="Grupo Canaima" width={480} height={250} priority/><LoaderCircle className="spin" size={26}/><span>Preparando ScanControl…</span></main>;
   if(!sessionUserId)return <LoginScreen/>;
-  if(!profile||!profile.is_active||(!storeId&&profile.role!=="supervisor"))return <main className="pending-screen"><Toaster position="top-center" richColors/><section><div className="pending-icon"><UserRound size={34}/></div><h1>Cuenta pendiente de asignación</h1><p>Un supervisor debe asignar una tienda y un rol antes de que puedas utilizar ScanControl.</p><Button variant="outline" onClick={signOut}><LogOut size={17}/> Cerrar sesión</Button></section></main>;
+  if(!profile||!profile.is_active||(!storeId&&profile.role!=="supervisor"))return <main className="pending-screen"><Toaster position="top-center" richColors/><section><div className="pending-icon"><UserRound size={34}/></div><h1>Cuenta pendiente de asignación</h1><p>El administrador debe asignar una tienda y un rol antes de que puedas utilizar ScanControl.</p><Button variant="outline" onClick={signOut}><LogOut size={17}/> Cerrar sesión</Button></section></main>;
 
   return <div className="app-shell"><Toaster position="top-center" richColors/>
-    <aside className={`sidebar ${mobileMenu?"sidebar-open":""}`}><div className="brand-block"><img src="/canaima-logo.svg" alt="Grupo Canaima" className="brand-logo"/><button className="mobile-close" onClick={()=>setMobileMenu(false)} aria-label="Cerrar menú"><X size={20}/></button></div><div className="product-name"><span>SCANCONTROL</span><small>Control inteligente de productos</small></div><nav className="nav-list"><NavItem icon={ScanLine} label="Escanear producto" active={view==="scanner"} onClick={()=>goTo("scanner")}/>{isEvaluator&&<NavItem icon={ClipboardCheck} label="Evaluación" active={view==="evaluation"} onClick={()=>goTo("evaluation")}/>}<NavItem icon={FileSpreadsheet} label="Catálogo Excel" active={view==="catalog"} onClick={()=>goTo("catalog")}/>{profile.role==="supervisor"&&<NavItem icon={Users} label="Usuarios y permisos" active={view==="users"} onClick={()=>goTo("users")}/>}</nav><div className="sidebar-store"><div className="store-mark"><Building2 size={18}/></div><div><span>Tienda activa</span><strong>{currentStore?.name??"Seleccionar tienda"}</strong></div></div><button className="sidebar-user" type="button" onClick={signOut}><div className="avatar">{initials}</div><div><strong>{displayName}</strong><span>{roleLabel}</span></div><LogOut size={18}/></button></aside>
+    <aside className={`sidebar ${mobileMenu?"sidebar-open":""}`}><div className="brand-block"><Image src="/canaima-logo-sidebar.svg" alt="Grupo Canaima" className="brand-logo" width={520} height={100}/><button className="mobile-close" onClick={()=>setMobileMenu(false)} aria-label="Cerrar menú"><X size={20}/></button></div><div className="product-name"><span>SCANCONTROL</span><small>Control inteligente de productos</small></div><nav className="nav-list"><NavItem icon={ScanLine} label="Escanear producto" active={view==="scanner"} onClick={()=>goTo("scanner")}/>{isEvaluator&&<NavItem icon={ClipboardCheck} label="Evaluación" active={view==="evaluation"} onClick={()=>goTo("evaluation")}/>}<NavItem icon={FileSpreadsheet} label="Catálogo Excel" active={view==="catalog"} onClick={()=>goTo("catalog")}/>{isOwner&&<NavItem icon={Users} label="Usuarios y permisos" active={view==="users"} onClick={()=>goTo("users")}/>}</nav><div className="sidebar-store"><div className="store-mark"><Building2 size={18}/></div><div><span>Tienda activa</span><strong>{currentStore?.name??"Seleccionar tienda"}</strong></div></div><button className="sidebar-user" type="button" onClick={signOut}><div className="avatar">{initials}</div><div><strong>{displayName}</strong><span>{roleLabel}</span></div><LogOut size={18}/></button></aside>
     <main className="workspace"><header className="topbar"><button className="mobile-menu" onClick={()=>setMobileMenu(true)} aria-label="Abrir menú"><Menu size={22}/></button><div className="topbar-title"><p className="eyebrow">GRUPO CANAIMA · OPERACIONES</p><h1>{viewTitle}</h1></div><div className="topbar-controls">{profile.role==="supervisor"&&view!=="users"&&<><div className="desktop-store-switcher"><Select value={storeId} onValueChange={selectStore}><SelectTrigger className="store-select"><Store size={16}/><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((item)=><SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div><label className="mobile-store-switcher" aria-label="Seleccionar tienda"><Store size={18}/><select value={storeId} onChange={(event)=>selectStore(event.target.value)} aria-label="Seleccionar tienda">{stores.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label></>}<Badge className="role-badge"><ShieldCheck size={14}/>{roleLabel}</Badge></div></header>
 
       {view==="scanner"&&<section className="page-content scanner-layout"><div className="scan-panel"><div className="section-heading"><div><Badge className="status-badge"><span className={`status-dot ${catalogLoading?"status-dot-loading":""}`}/> {catalogLoading?"Preparando catálogo…":`Lector instantáneo · ${cachedProductCount.toLocaleString("es-ES")} productos`}</Badge><h2>Escaneo continuo</h2><p>Apunta la cámara al código. El resultado aparecerá al instante y el lector seguirá activo.</p></div><div className="store-pill"><Store size={16}/><span>{currentStore?.name}</span></div></div>{cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline/><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Compatible con EAN-13, UPC y Code 128</small></button>}<div className="manual-entry"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div></div>
@@ -375,7 +402,9 @@ export default function Home() {
 
       {view==="catalog"&&<section className="page-content catalog-page"><div className="catalog-intro"><div className="catalog-icon"><FileSpreadsheet size={30}/></div><div><Badge variant="outline">Catálogo independiente</Badge><h2>Excel de {currentStore?.name}</h2><p>Este archivo solo modifica los productos y precios de la tienda activa. Las otras 15 tiendas permanecerán sin cambios.</p></div></div><div className="catalog-grid"><label className={`upload-card ${uploading?"uploading":""}`}><input type="file" disabled={Boolean(uploading)} accept=".xlsx,.xls" onChange={(event)=>{const file=event.target.files?.[0];if(file)void importExcel(file);event.currentTarget.value=""}}/>{uploading?<><LoaderCircle className="spin upload-icon-plain" size={36}/><strong>Cargando {uploading.done.toLocaleString("es-ES")} de {uploading.total.toLocaleString("es-ES")}</strong><div className="upload-progress"><span style={{width:`${Math.round(uploading.done/uploading.total*100)}%`}}/></div><small>No cierres esta pantalla</small></>:<><div className="upload-icon"><Upload size={28}/></div><strong>Cargar o reemplazar Excel</strong><span>Selecciona el inventario de esta tienda</span><small>Formato .XLSX o .XLS · Máximo 20 MB</small></>}</label><div className="catalog-status"><div className="status-head"><span>CATÁLOGO ACTIVO</span><Badge className={catalogMeta?"active-catalog":"empty-catalog"}>{catalogMeta?"Actualizado":"Sin catálogo"}</Badge></div><FileSpreadsheet size={38}/><h3>{catalogMeta?.fileName??"No se ha cargado un archivo"}</h3><p>{(catalogMeta?.rowCount??0).toLocaleString("es-ES")} productos disponibles</p><div className="catalog-meta"><div><span>Tienda</span><strong>{currentStore?.name}</strong></div><div><span>Alcance</span><strong>Solo esta tienda</strong></div></div></div></div><div className="safety-note"><ShieldCheck size={22}/><div><strong>Importación segura por tienda</strong><p>El catálogo de una sucursal nunca modifica el de las demás. La versión anterior queda conservada.</p></div></div></section>}
 
-      {view==="users"&&profile.role==="supervisor"&&<section className="page-content users-page"><div className="users-intro"><div><Badge className="status-badge"><ShieldCheck size={14}/> Solo supervisores</Badge><h2>Usuarios y permisos</h2><p>Asigna a cada cuenta su función y tienda. Los cambios se guardan inmediatamente.</p></div><Button variant="outline" onClick={()=>void loadManagedProfiles()} disabled={usersLoading||Boolean(savingUserId)}><RefreshCw className={usersLoading?"spin":""} size={16}/> Actualizar</Button></div><div className="user-summary"><div><span>EMPLEADOS</span><strong>{userStats.employees}</strong></div><div><span>GERENTES</span><strong>{userStats.managers}</strong></div><div><span>SUPERVISORES</span><strong>{userStats.supervisors}</strong></div><div><span>PENDIENTES</span><strong>{userStats.pending}</strong></div></div>{usersError?<div className="users-setup"><div className="pending-icon"><Users size={32}/></div><h3>Falta activar este módulo</h3><p>{usersError} Ejecuta el SQL de “Usuarios y permisos” una sola vez y luego pulsa Actualizar.</p></div>:usersLoading?<div className="users-loading"><LoaderCircle className="spin" size={28}/><span>Cargando cuentas registradas…</span></div>:<div className="users-card"><div className="data-card-head"><div><strong>Cuentas registradas</strong><span>{managedProfiles.length} usuarios encontrados</span></div><Badge variant="outline">Asignación por tienda</Badge></div><div className="users-table-wrap"><table className="users-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Tienda asignada</th><th>Acceso</th></tr></thead><tbody>{managedProfiles.length?managedProfiles.map((item)=><tr key={item.id}><td><div className="managed-user"><div className="managed-avatar">{(item.full_name||item.email||"U").split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("")}</div><div><strong>{item.full_name||"Nombre no indicado"}</strong><span>{item.email||`Cuenta ${item.id.slice(0,8)}`}</span>{item.id===sessionUserId&&<Badge className="self-badge">Tu cuenta</Badge>}</div></div></td><td><Select value={item.role} disabled={item.id===sessionUserId||Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{role:value as RoleCode})}><SelectTrigger className="user-role-select"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></td><td>{item.role==="supervisor"?<div className="all-stores"><Store size={15}/> Todas las tiendas</div>:<Select value={item.store_id??undefined} disabled={Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{store_id:value})}><SelectTrigger className="user-store-select"><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select>}</td><td><div className="access-toggle"><Switch checked={item.is_active} disabled={item.id===sessionUserId||Boolean(savingUserId)} onCheckedChange={(checked)=>void updateManagedProfile(item.id,{is_active:checked})} aria-label={`Acceso de ${item.full_name||item.email||"usuario"}`}/><span className={item.is_active?"access-active":"access-inactive"}>{savingUserId===item.id?"Guardando…":item.is_active?"Activo":"Desactivado"}</span></div></td></tr>):<tr><td colSpan={4} className="empty-table">Aún no hay cuentas registradas.</td></tr>}</tbody></table></div></div>}</section>}
+      {view==="users"&&isOwner&&<section className="page-content users-page"><div className="users-intro"><div><Badge className="status-badge"><ShieldCheck size={14}/> Administración exclusiva</Badge><h2>Usuarios y permisos</h2><p>Solo Romer puede crear cuentas, asignar funciones, elegir tiendas y autorizar el acceso.</p></div><div className="users-actions"><Button variant="outline" onClick={()=>void loadManagedProfiles()} disabled={usersLoading||Boolean(savingUserId)}><RefreshCw className={usersLoading?"spin":""} size={16}/> Actualizar</Button><Button className="primary-action" onClick={()=>{setNewUser((current)=>({...current,storeId:current.storeId||stores[0]?.id||""}));setUserDialogOpen(true);}}><UserPlus size={17}/> Agregar usuario</Button></div></div><div className="user-summary"><div><span>EMPLEADOS</span><strong>{userStats.employees}</strong></div><div><span>GERENTES</span><strong>{userStats.managers}</strong></div><div><span>SUPERVISORES</span><strong>{userStats.supervisors}</strong></div><div><span>PENDIENTES</span><strong>{userStats.pending}</strong></div></div>{usersError?<div className="users-setup"><div className="pending-icon"><Users size={32}/></div><h3>Falta activar el control propietario</h3><p>{usersError} Ejecuta el nuevo SQL de “Control propietario” en Supabase y luego pulsa Actualizar.</p></div>:usersLoading?<div className="users-loading"><LoaderCircle className="spin" size={28}/><span>Cargando cuentas registradas…</span></div>:<div className="users-card"><div className="data-card-head"><div><strong>Cuentas registradas</strong><span>{managedProfiles.length} usuarios bajo el control de Romer</span></div><Badge variant="outline">Asignación por tienda</Badge></div><div className="users-table-wrap"><table className="users-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Tienda asignada</th><th>Acceso</th></tr></thead><tbody>{managedProfiles.length?managedProfiles.map((item)=><tr key={item.id}><td><div className="managed-user"><div className="managed-avatar">{(item.full_name||item.email||"U").split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("")}</div><div><strong>{item.full_name||"Nombre no indicado"}</strong><span>{item.email||`Cuenta ${item.id.slice(0,8)}`}</span>{item.is_owner&&<Badge className="self-badge">Propietario</Badge>}</div></div></td><td><Select value={item.role} disabled={item.is_owner||Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{role:value as RoleCode})}><SelectTrigger className="user-role-select"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></td><td>{item.role==="supervisor"?<div className="all-stores"><Store size={15}/> Todas las tiendas</div>:<Select value={item.store_id??undefined} disabled={Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{store_id:value})}><SelectTrigger className="user-store-select"><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select>}</td><td><div className="access-toggle"><Switch checked={item.is_active} disabled={item.is_owner||Boolean(savingUserId)} onCheckedChange={(checked)=>void updateManagedProfile(item.id,{is_active:checked})} aria-label={`Acceso de ${item.full_name||item.email||"usuario"}`}/><span className={item.is_active?"access-active":"access-inactive"}>{savingUserId===item.id?"Guardando…":item.is_active?"Activo":"Desactivado"}</span></div></td></tr>):<tr><td colSpan={4} className="empty-table">Aún no hay cuentas registradas.</td></tr>}</tbody></table></div></div>}
+        <Dialog open={userDialogOpen} onOpenChange={(open)=>!creatingUser&&setUserDialogOpen(open)}><DialogContent className="user-dialog"><DialogHeader><div className="dialog-icon"><Plus size={21}/></div><DialogTitle>Agregar nuevo usuario</DialogTitle><DialogDescription>Romer define desde aquí quién puede entrar, su función y la tienda correspondiente.</DialogDescription></DialogHeader><form className="create-user-form" onSubmit={createManagedUser}><label>Nombre completo<Input value={newUser.fullName} onChange={(event)=>setNewUser({...newUser,fullName:event.target.value})} placeholder="Nombre y apellido" required/></label><label>Correo electrónico<Input value={newUser.email} onChange={(event)=>setNewUser({...newUser,email:event.target.value})} type="email" placeholder="empleado@empresa.com" required/></label><label>Contraseña temporal<Input value={newUser.password} onChange={(event)=>setNewUser({...newUser,password:event.target.value})} type="password" minLength={8} placeholder="Mínimo 8 caracteres" required/></label><div className="create-user-grid"><label>Función<Select value={newUser.role} onValueChange={(value)=>setNewUser({...newUser,role:value as RoleCode})}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></label>{newUser.role!=="supervisor"&&<label>Tienda<Select value={newUser.storeId} onValueChange={(value)=>setNewUser({...newUser,storeId:value})}><SelectTrigger><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select></label>}</div><div className="create-user-note"><Mail size={17}/><span>La persona recibirá un correo de confirmación antes de poder iniciar sesión.</span></div><DialogFooter><Button type="button" variant="outline" onClick={()=>setUserDialogOpen(false)} disabled={creatingUser}>Cancelar</Button><Button className="primary-action" type="submit" disabled={creatingUser}>{creatingUser?<><LoaderCircle className="spin" size={17}/> Creando…</>:<><UserPlus size={17}/> Crear usuario</>}</Button></DialogFooter></form></DialogContent></Dialog>
+      </section>}
     </main>
   </div>;
 }
