@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { BrowserMultiFormatReader, type IScannerControls } from "@zxing/browser";
+import { BarcodeFormat, BrowserMultiFormatOneDReader, type IScannerControls } from "@zxing/browser";
 import { read } from "xlsx";
 import { AlignmentType, BorderStyle, Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
 import { Barcode, Building2, Camera, CheckCircle2, ChevronRight, ClipboardCheck, Download, FileSpreadsheet, KeyRound, LoaderCircle, LockKeyhole, LogOut, Mail, Menu, PackageSearch, Plus, RefreshCw, ScanLine, ShieldCheck, Store, Upload, UserRound, UserPlus, Users, X } from "lucide-react";
@@ -16,6 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { toast } from "sonner";
 import { createProvisioningClient, supabase } from "@/app/lib/supabase";
 import { getImportErrorMessage, parseCatalogWorkbook } from "@/app/lib/catalog-import";
+import { getBarcodeCandidates, normalizeBarcode } from "@/app/lib/barcode";
 
 type RoleCode = "employee" | "manager" | "supervisor";
 type View = "scanner" | "evaluation" | "catalog" | "users";
@@ -33,7 +34,74 @@ type UploadFeedback = { kind: "success" | "error"; title: string; message: strin
 const OBSERVATIONS: Observation[] = ["SIN INCIDENCIAS", "PRECIO ERRÓNEO", "MAL ETIQUETADO", "SIN ETIQUETA"];
 const ROLE_LABELS: Record<RoleCode, string> = { employee: "Empleado", manager: "Gerente", supervisor: "Supervisor" };
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const cleanCode = (value: unknown) => String(value ?? "").trim().replace(/\.0$/, "");
+const GARMENT_BARCODE_FORMATS = [
+  BarcodeFormat.EAN_13,
+  BarcodeFormat.EAN_8,
+  BarcodeFormat.UPC_A,
+  BarcodeFormat.UPC_E,
+  BarcodeFormat.CODE_128,
+  BarcodeFormat.CODE_39,
+  BarcodeFormat.CODE_93,
+  BarcodeFormat.ITF,
+  BarcodeFormat.CODABAR,
+];
+
+type ExtendedCameraCapabilities = MediaTrackCapabilities & {
+  focusMode?: string[];
+  zoom?: { min: number; max: number; step: number };
+};
+
+type ExtendedCameraConstraintSet = MediaTrackConstraintSet & {
+  focusMode?: string;
+  zoom?: number;
+};
+
+function cameraDeviceScore(device: MediaDeviceInfo, index: number) {
+  const label = device.label.toLowerCase();
+  let score = 0;
+  if (/back|rear|environment|traser/.test(label)) score += 100;
+  if (/main|principal|standard|1\s?[x×]/.test(label)) score += 45;
+  if (/front|user|selfie|frontal/.test(label)) score -= 220;
+  if (/ultra[\s-]?wide|ultra gran|0[.,]5\s?[x×]?/.test(label)) score -= 240;
+  if (/macro|telephoto|telefoto/.test(label)) score -= 90;
+  const camera2Index = label.match(/camera2\s+(\d+)/)?.[1];
+  if (camera2Index === "0") score += 55;
+  if (!label) score -= 20 + index;
+  return score;
+}
+
+function selectMainRearCamera(devices: MediaDeviceInfo[]) {
+  const candidates = devices.filter((device) => device.kind === "videoinput" && device.label);
+  if (!candidates.length) return undefined;
+  return candidates
+    .map((device, index) => ({ device, score: cameraDeviceScore(device, index) }))
+    .sort((left, right) => right.score - left.score)[0]?.device;
+}
+
+function cameraConstraints(deviceId?: string): MediaStreamConstraints {
+  return {
+    audio: false,
+    video: {
+      ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: "environment" } }),
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 30, min: 20 },
+    },
+  };
+}
+
+async function optimizeCamera(stream: MediaStream) {
+  const track = stream.getVideoTracks()[0];
+  if (!track) return { focus: false, zoom: false };
+  const capabilities = track.getCapabilities?.() as ExtendedCameraCapabilities | undefined;
+  const advanced: ExtendedCameraConstraintSet = {};
+  if (capabilities?.focusMode?.includes("continuous")) advanced.focusMode = "continuous";
+  if (capabilities?.zoom && capabilities.zoom.min <= 1 && capabilities.zoom.max >= 1) advanced.zoom = 1;
+  if (Object.keys(advanced).length) {
+    try { await track.applyConstraints({ advanced: [advanced] }); } catch { /* El enfoque automático del dispositivo sigue disponible. */ }
+  }
+  return { focus: Boolean(advanced.focusMode), zoom: advanced.zoom === 1 };
+}
 
 function NavItem({ icon: Icon, label, active, onClick }: { icon: typeof ScanLine; label: string; active: boolean; onClick: () => void }) {
   return <button className={`nav-item ${active ? "nav-item-active" : ""}`} onClick={onClick} type="button"><Icon size={20}/><span>{label}</span><ChevronRight className="nav-chevron" size={16}/></button>;
@@ -105,6 +173,7 @@ export default function Home() {
   const [lastProduct, setLastProduct] = useState<Product | null>(null);
   const [manualCode, setManualCode] = useState("");
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraStatus, setCameraStatus] = useState("Preparando cámara principal 1×…");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [catalogMeta, setCatalogMeta] = useState<CatalogMeta>(null);
   const [uploading, setUploading] = useState<UploadState | null>(null);
@@ -123,6 +192,7 @@ export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const controlsRef = useRef<IScannerControls | null>(null);
+  const cameraSessionRef = useRef(0);
   const lastScanRef = useRef({ code: "", at: 0 });
   const scanBusyRef = useRef(false);
   const evaluationIdRef = useRef<string | null>(null);
@@ -193,18 +263,19 @@ export default function Home() {
     setCachedProductCount(0);
     setCatalogLoading(true);
     const nextCache=new Map<string,Product>();
+    let loadedProducts=0;
     const pageSize=1000;
     for(let start=0;;start+=pageSize){
       const {data,error}=await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",targetStore).range(start,start+pageSize-1);
       if(productCacheStoreRef.current!==targetStore)return;
       if(error){setCatalogLoading(false);return;}
-      for(const row of data??[]){const product:Product={id:row.id,storeId:row.store_id,barcode:row.barcode,article:row.article,description:row.description??"",color:row.color||"No especificado",size:row.size||"No especificado",style:row.style||"No especificado",amount:Number(row.amount)};nextCache.set(cleanCode(product.barcode),product);}
+      for(const row of data??[]){const product:Product={id:row.id,storeId:row.store_id,barcode:row.barcode,article:row.article,description:row.description??"",color:row.color||"No especificado",size:row.size||"No especificado",style:row.style||"No especificado",amount:Number(row.amount)};for(const candidate of getBarcodeCandidates(product.barcode))nextCache.set(candidate,product);loadedProducts+=1;}
       if((data?.length??0)<pageSize)break;
     }
     if(productCacheStoreRef.current!==targetStore)return;
     productCacheRef.current=nextCache;
     productCacheReadyRef.current=true;
-    setCachedProductCount(nextCache.size);
+    setCachedProductCount(loadedProducts);
     setCatalogLoading(false);
   },[]);
 
@@ -324,13 +395,14 @@ export default function Home() {
 
   const registerCode = useCallback(async (rawCode: string, evaluation=false) => {
     if (!storeId) return;
-    const normalized=cleanCode(rawCode);
+    const normalized=normalizeBarcode(rawCode);
     if (!normalized) return;
-    let product=productCacheStoreRef.current===storeId?productCacheRef.current.get(normalized):undefined;
+    const candidates=getBarcodeCandidates(normalized);
+    let product=productCacheStoreRef.current===storeId?candidates.map((candidate)=>productCacheRef.current.get(candidate)).find(Boolean):undefined;
     if(!product&&!productCacheReadyRef.current){
       if(scanBusyRef.current)return;
       scanBusyRef.current=true;
-      const { data, error } = await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",storeId).eq("barcode",normalized).maybeSingle();
+      const { data, error } = await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",storeId).in("barcode",candidates).limit(1).maybeSingle();
       scanBusyRef.current=false;
       if(!error&&data)product={id:data.id,storeId:data.store_id,barcode:data.barcode,article:data.article,description:data.description??"",color:data.color||"No especificado",size:data.size||"No especificado",style:data.style||"No especificado",amount:Number(data.amount)};
     }
@@ -340,11 +412,68 @@ export default function Home() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[storeId,currentStore?.name,isEvaluator,sessionUserId]);
 
-  async function startCamera(evaluation=false){
-    try{setCameraOpen(true);await new Promise((resolve)=>setTimeout(resolve,120));if(!videoRef.current)return;const reader=new BrowserMultiFormatReader();controlsRef.current=await reader.decodeFromVideoDevice(undefined,videoRef.current,(result)=>{if(!result)return;const scanned=result.getText(),now=Date.now();if(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<1800)return;lastScanRef.current={code:scanned,at:now};void registerCode(scanned,evaluation);});}
-    catch{setCameraOpen(false);toast.error("No se pudo abrir la cámara",{description:"Verifica el permiso de cámara del navegador."});}
+  function releaseCameraStream(){
+    controlsRef.current?.stop();
+    controlsRef.current=null;
+    const stream=videoRef.current?.srcObject;
+    if(stream instanceof MediaStream)stream.getTracks().forEach((track)=>track.stop());
+    if(videoRef.current)videoRef.current.srcObject=null;
   }
-  function stopCamera(){controlsRef.current?.stop();controlsRef.current=null;setCameraOpen(false);}
+
+  async function startCamera(evaluation=false){
+    const cameraSession=++cameraSessionRef.current;
+    releaseCameraStream();
+    setCameraStatus("Preparando cámara principal 1×…");
+    setCameraOpen(true);
+    try{
+      let videoElement:HTMLVideoElement|null=null;
+      for(let attempt=0;attempt<12&&!videoElement;attempt+=1){
+        await new Promise<void>((resolve)=>requestAnimationFrame(()=>resolve()));
+        videoElement=videoRef.current;
+      }
+      if(!videoElement)throw new Error("No se pudo preparar la vista de la cámara");
+
+      let devices=await navigator.mediaDevices.enumerateDevices();
+      let preferredCamera=selectMainRearCamera(devices);
+      let stream=await navigator.mediaDevices.getUserMedia(cameraConstraints(preferredCamera?.deviceId));
+
+      if(!preferredCamera){
+        devices=await navigator.mediaDevices.enumerateDevices();
+        preferredCamera=selectMainRearCamera(devices);
+        const currentDeviceId=stream.getVideoTracks()[0]?.getSettings().deviceId;
+        if(preferredCamera?.deviceId&&preferredCamera.deviceId!==currentDeviceId){
+          stream.getTracks().forEach((track)=>track.stop());
+          stream=await navigator.mediaDevices.getUserMedia(cameraConstraints(preferredCamera.deviceId));
+        }
+      }
+
+      if(cameraSession!==cameraSessionRef.current){stream.getTracks().forEach((track)=>track.stop());return;}
+      const optimization=await optimizeCamera(stream);
+      const reader=new BrowserMultiFormatOneDReader(undefined,{delayBetweenScanAttempts:60,delayBetweenScanSuccess:120});
+      reader.possibleFormats=GARMENT_BARCODE_FORMATS;
+      setCameraStatus(optimization.focus?"Cámara principal 1× · enfoque continuo":"Cámara trasera principal 1×");
+      controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
+        if(!result)return;
+        const scanned=normalizeBarcode(result.getText()),now=Date.now();
+        if(!scanned||(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<1200))return;
+        lastScanRef.current={code:scanned,at:now};
+        void registerCode(scanned,evaluation);
+      });
+    }
+    catch(error){
+      if(cameraSession!==cameraSessionRef.current)return;
+      releaseCameraStream();
+      setCameraOpen(false);
+      const name=error instanceof DOMException?error.name:"";
+      const description=name==="NotAllowedError"
+        ? "Permite el acceso a la cámara en el navegador y vuelve a intentarlo."
+        : name==="NotFoundError"
+          ? "No se encontró una cámara trasera disponible."
+          : "Cierra otras aplicaciones que usen la cámara y vuelve a intentarlo.";
+      toast.error("No se pudo abrir la cámara",{description});
+    }
+  }
+  function stopCamera(){cameraSessionRef.current+=1;releaseCameraStream();setCameraOpen(false);}
   function goTo(next:View){stopCamera();setView(next);setMobileMenu(false);}
 
   async function importExcel(file:File){
@@ -425,10 +554,10 @@ export default function Home() {
     <aside className={`sidebar ${mobileMenu?"sidebar-open":""}`}><div className="brand-block"><Image src="/canaima-logo-sidebar.svg" alt="Grupo Canaima" className="brand-logo" width={520} height={100}/><button className="mobile-close" onClick={()=>setMobileMenu(false)} aria-label="Cerrar menú"><X size={20}/></button></div><div className="product-name"><span>SCANCONTROL</span><small>Control inteligente de productos</small></div><nav className="nav-list"><NavItem icon={ScanLine} label="Escanear producto" active={view==="scanner"} onClick={()=>goTo("scanner")}/>{isEvaluator&&<NavItem icon={ClipboardCheck} label="Evaluación" active={view==="evaluation"} onClick={()=>goTo("evaluation")}/>}<NavItem icon={FileSpreadsheet} label="Catálogo Excel" active={view==="catalog"} onClick={()=>goTo("catalog")}/>{isOwner&&<NavItem icon={Users} label="Usuarios y permisos" active={view==="users"} onClick={()=>goTo("users")}/>}</nav><div className="sidebar-store"><div className="store-mark"><Building2 size={18}/></div><div><span>Tienda activa</span><strong>{currentStore?.name??"Seleccionar tienda"}</strong></div></div><button className="sidebar-user" type="button" onClick={signOut}><div className="avatar">{initials}</div><div><strong>{displayName}</strong><span>{roleLabel}</span></div><LogOut size={18}/></button></aside>
     <main className="workspace"><header className="topbar"><button className="mobile-menu" onClick={()=>setMobileMenu(true)} aria-label="Abrir menú"><Menu size={22}/></button><div className="topbar-title"><p className="eyebrow">GRUPO CANAIMA · OPERACIONES</p><h1>{viewTitle}</h1></div><div className="topbar-controls">{profile.role==="supervisor"&&view!=="users"&&<><div className="desktop-store-switcher"><Select value={storeId} onValueChange={selectStore}><SelectTrigger className="store-select"><Store size={16}/><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((item)=><SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div><label className="mobile-store-switcher" aria-label="Seleccionar tienda"><Store size={18}/><select value={storeId} onChange={(event)=>selectStore(event.target.value)} aria-label="Seleccionar tienda">{stores.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label></>}<Badge className="role-badge"><ShieldCheck size={14}/>{roleLabel}</Badge></div></header>
 
-      {view==="scanner"&&<section className="page-content scanner-layout"><div className="scan-panel"><div className="section-heading"><div><Badge className="status-badge"><span className={`status-dot ${catalogLoading?"status-dot-loading":""}`}/> {catalogLoading?"Preparando catálogo…":`Lector instantáneo · ${cachedProductCount.toLocaleString("es-ES")} productos`}</Badge><h2>Escaneo continuo</h2><p>Apunta la cámara al código. El resultado aparecerá al instante y el lector seguirá activo.</p></div><div className="store-pill"><Store size={16}/><span>{currentStore?.name}</span></div></div>{cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline/><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Compatible con EAN-13, UPC y Code 128</small></button>}<div className="manual-entry"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div></div>
+      {view==="scanner"&&<section className="page-content scanner-layout"><div className="scan-panel"><div className="section-heading"><div><Badge className="status-badge"><span className={`status-dot ${catalogLoading?"status-dot-loading":""}`}/> {catalogLoading?"Preparando catálogo…":`Lector instantáneo · ${cachedProductCount.toLocaleString("es-ES")} productos`}</Badge><h2>Escaneo continuo</h2><p>Apunta la cámara al código. El resultado aparecerá al instante y el lector seguirá activo.</p></div><div className="store-pill"><Store size={16}/><span>{currentStore?.name}</span></div></div>{cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline/><div className="camera-mode" aria-live="polite"><Camera size={14}/>{cameraStatus}</div><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Cámara principal 1× · EAN, UPC y Code 128</small></button>}<div className="manual-entry"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div></div>
         <div className={`result-panel ${lastProduct?"":"result-empty"}`}>{lastProduct?<><div className="result-success"><CheckCircle2 size={20}/><span>Producto encontrado</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO / ARTÍCULO</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div><span>TAMAÑO</span><strong>{lastProduct.size}</strong></div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div></>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div></section>}
 
-      {view==="evaluation"&&isEvaluator&&<section className="page-content evaluation-page"><div className="evaluation-toolbar"><div><Badge variant="outline">{evaluationId?"Evaluación en curso":"Lista para iniciar"}</Badge><h2>Registro de verificación</h2><p>Cada lectura se guarda con “Sin incidencias” y puede corregirse al instante.</p></div><div className="toolbar-actions"><Button variant="outline" onClick={addWithoutLabel}>Registrar sin etiqueta</Button><Button onClick={()=>startCamera(true)}><Camera size={17}/> Escanear continuamente</Button></div></div>{cameraOpen&&<div className="evaluation-camera"><video ref={videoRef} muted playsInline/><div><strong>Cámara activa</strong><span>Los productos se agregan y guardan automáticamente.</span></div><Button variant="outline" onClick={stopCamera}>Detener</Button></div>}<div className="summary-grid">{summary.map((item)=><div key={item.observation}><span>{item.observation}</span><strong>{item.count}</strong></div>)}</div><div className="data-card"><div className="data-card-head"><div><strong>Productos evaluados</strong><span>{evaluationItems.length} registros guardados</span></div><Button variant="outline" onClick={exportEvaluation} disabled={!evaluationItems.length}><Download size={17}/> Descargar Word editable</Button></div><div className="evaluation-table-wrap"><table className="evaluation-table"><thead><tr><th>Código / artículo</th><th>Descripción</th><th>Detalles</th><th>Monto</th><th>Observación</th><th/></tr></thead><tbody>{evaluationItems.length?evaluationItems.map((item)=><tr key={item.rowId}><td><strong>{item.article}</strong><span>{item.scannedAt}</span></td><td>{item.description}</td><td>{item.color} · {item.size}</td><td><strong>{money.format(item.amount)}</strong></td><td><Select value={item.observation} onValueChange={(value)=>void changeObservation(item.rowId,value as Observation)}><SelectTrigger className="observation"><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></td><td><button className="delete-row" onClick={()=>void deleteEvaluationItem(item.rowId)}><X size={16}/></button></td></tr>):<tr><td colSpan={6} className="empty-table">Aún no hay productos en esta evaluación.</td></tr>}</tbody></table></div></div></section>}
+      {view==="evaluation"&&isEvaluator&&<section className="page-content evaluation-page"><div className="evaluation-toolbar"><div><Badge variant="outline">{evaluationId?"Evaluación en curso":"Lista para iniciar"}</Badge><h2>Registro de verificación</h2><p>Cada lectura se guarda con “Sin incidencias” y puede corregirse al instante.</p></div><div className="toolbar-actions"><Button variant="outline" onClick={addWithoutLabel}>Registrar sin etiqueta</Button><Button onClick={()=>startCamera(true)}><Camera size={17}/> Escanear continuamente</Button></div></div>{cameraOpen&&<div className="evaluation-camera"><video ref={videoRef} muted playsInline/><div><strong>{cameraStatus}</strong><span>Los productos se agregan y guardan automáticamente.</span></div><Button variant="outline" onClick={stopCamera}>Detener</Button></div>}<div className="summary-grid">{summary.map((item)=><div key={item.observation}><span>{item.observation}</span><strong>{item.count}</strong></div>)}</div><div className="data-card"><div className="data-card-head"><div><strong>Productos evaluados</strong><span>{evaluationItems.length} registros guardados</span></div><Button variant="outline" onClick={exportEvaluation} disabled={!evaluationItems.length}><Download size={17}/> Descargar Word editable</Button></div><div className="evaluation-table-wrap"><table className="evaluation-table"><thead><tr><th>Código / artículo</th><th>Descripción</th><th>Detalles</th><th>Monto</th><th>Observación</th><th/></tr></thead><tbody>{evaluationItems.length?evaluationItems.map((item)=><tr key={item.rowId}><td><strong>{item.article}</strong><span>{item.scannedAt}</span></td><td>{item.description}</td><td>{item.color} · {item.size}</td><td><strong>{money.format(item.amount)}</strong></td><td><Select value={item.observation} onValueChange={(value)=>void changeObservation(item.rowId,value as Observation)}><SelectTrigger className="observation"><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></td><td><button className="delete-row" onClick={()=>void deleteEvaluationItem(item.rowId)}><X size={16}/></button></td></tr>):<tr><td colSpan={6} className="empty-table">Aún no hay productos en esta evaluación.</td></tr>}</tbody></table></div></div></section>}
 
       {view==="catalog"&&<section className="page-content catalog-page"><div className="catalog-intro"><div className="catalog-icon"><FileSpreadsheet size={30}/></div><div><Badge variant="outline">Catálogo independiente</Badge><h2>Excel de {currentStore?.name}</h2><p>Este archivo solo modifica los productos y precios de la tienda activa. Las otras 15 tiendas permanecerán sin cambios.</p></div></div><div className="catalog-grid"><div className={`upload-card ${uploading?"uploading":""}`} aria-live="polite" aria-busy={Boolean(uploading)}><input ref={fileInputRef} type="file" disabled={Boolean(uploading)} accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event)=>{const file=event.currentTarget.files?.[0];event.currentTarget.value="";if(file)void importExcel(file);}}/>{uploading?<><LoaderCircle className="spin upload-icon-plain" size={36}/><strong>{uploadLabel}</strong><span className="upload-file-name">{uploading.fileName}</span><div className="upload-progress"><span style={{width:`${uploadPercent}%`}}/></div><small>No cierres esta pantalla hasta que aparezca la confirmación</small></>:<><div className="upload-icon"><Upload size={28}/></div><strong>Cargar o reemplazar Excel</strong><span>Elige el inventario de esta tienda; la carga comenzará automáticamente.</span><Button className="upload-select-button" type="button" onClick={()=>fileInputRef.current?.click()}><FileSpreadsheet size={17}/> Seleccionar Excel</Button><small>Formato .XLSX o .XLS · Máximo 20 MB</small></>}</div><div className="catalog-status"><div className="status-head"><span>CATÁLOGO ACTIVO</span><Badge className={catalogMeta?"active-catalog":"empty-catalog"}>{catalogMeta?"Actualizado":"Sin catálogo"}</Badge></div><FileSpreadsheet size={38}/><h3>{catalogMeta?.fileName??"No se ha cargado un archivo"}</h3><p>{(catalogMeta?.rowCount??0).toLocaleString("es-ES")} productos disponibles</p><div className="catalog-meta"><div><span>Tienda</span><strong>{currentStore?.name}</strong></div><div><span>Alcance</span><strong>Solo esta tienda</strong></div></div></div></div>{uploadFeedback&&<div className={`upload-feedback upload-feedback-${uploadFeedback.kind}`} role={uploadFeedback.kind==="error"?"alert":"status"}>{uploadFeedback.kind==="success"?<CheckCircle2 size={22}/>:<X size={22}/>}<div><strong>{uploadFeedback.title}</strong><p>{uploadFeedback.message}</p></div></div>}<div className="safety-note"><ShieldCheck size={22}/><div><strong>Importación segura por tienda</strong><p>El catálogo de una sucursal nunca modifica el de las demás. La versión anterior queda conservada.</p></div></div></section>}
 

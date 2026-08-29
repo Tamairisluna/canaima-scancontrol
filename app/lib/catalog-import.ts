@@ -1,4 +1,5 @@
 import { utils, type WorkBook } from "xlsx";
+import { normalizeBarcode } from "@/app/lib/barcode";
 
 export type CatalogImportProduct = {
   barcode: string;
@@ -39,11 +40,6 @@ const normalizeHeader = (value: unknown) => String(value ?? "")
   .trim();
 
 const cleanText = (value: unknown, fallback = "No especificado") => String(value ?? "").trim() || fallback;
-
-const cleanCode = (value: unknown) => {
-  if (typeof value === "number" && Number.isFinite(value)) return String(Math.trunc(value));
-  return String(value ?? "").trim().replace(/\.0$/, "");
-};
 
 const parseAmount = (value: unknown) => {
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
@@ -103,7 +99,7 @@ export function parseCatalogWorkbook(workbook: WorkBook): ParsedCatalog {
     const dataRows = rows.slice(headerIndex + 1);
 
     for (const row of dataRows) {
-      const barcode = cleanCode(row[columns.barcode]);
+      const barcode = normalizeBarcode(row[columns.barcode]);
       if (!barcode) {
         skippedRows += 1;
         continue;
