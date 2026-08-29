@@ -1,0 +1,381 @@
+"use client";
+
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BrowserMultiFormatReader, type IScannerControls } from "@zxing/browser";
+import { read, utils } from "xlsx";
+import { AlignmentType, BorderStyle, Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
+import { Barcode, Building2, Camera, CheckCircle2, ChevronRight, ClipboardCheck, Download, FileSpreadsheet, LoaderCircle, LockKeyhole, LogOut, Menu, PackageSearch, RefreshCw, ScanLine, ShieldCheck, Store, Upload, UserRound, Users, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Toaster } from "@/components/ui/sonner";
+import { toast } from "sonner";
+import { supabase } from "@/app/lib/supabase";
+
+type RoleCode = "employee" | "manager" | "supervisor";
+type View = "scanner" | "evaluation" | "catalog" | "users";
+type Observation = "SIN INCIDENCIAS" | "PRECIO ERRÓNEO" | "MAL ETIQUETADO" | "SIN ETIQUETA";
+type StoreRecord = { id: string; name: string; slug: string };
+type Profile = { id: string; full_name: string | null; role: RoleCode; store_id: string | null; is_active: boolean };
+type ManagedProfile = Profile & { email: string | null; created_at: string | null };
+type Product = { id: string | null; storeId: string; barcode: string; article: string; description: string; color: string; size: string; style: string; amount: number };
+type EvaluationItem = Product & { rowId: string; observation: Observation; scannedAt: string };
+type CatalogMeta = { fileName: string; rowCount: number; activatedAt: string | null } | null;
+
+const OBSERVATIONS: Observation[] = ["SIN INCIDENCIAS", "PRECIO ERRÓNEO", "MAL ETIQUETADO", "SIN ETIQUETA"];
+const ROLE_LABELS: Record<RoleCode, string> = { employee: "Empleado", manager: "Gerente", supervisor: "Supervisor" };
+const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const cleanText = (value: unknown, fallback = "No especificado") => String(value ?? "").trim() || fallback;
+const cleanCode = (value: unknown) => String(value ?? "").trim().replace(/\.0$/, "");
+
+function NavItem({ icon: Icon, label, active, onClick }: { icon: typeof ScanLine; label: string; active: boolean; onClick: () => void }) {
+  return <button className={`nav-item ${active ? "nav-item-active" : ""}`} onClick={onClick} type="button"><Icon size={20}/><span>{label}</span><ChevronRight className="nav-chevron" size={16}/></button>;
+}
+
+function LoginScreen() {
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [formMessage, setFormMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setFormMessage(null);
+    try {
+      if (mode === "login") {
+        const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+        if (error) {
+          const text = error.code === "email_not_confirmed"
+            ? "Debes confirmar primero el enlace enviado a tu correo."
+            : error.code === "invalid_credentials"
+              ? "El correo o la contraseña no son correctos."
+              : "No se pudo iniciar sesión. Intenta nuevamente.";
+          setFormMessage({ kind: "error", text });
+          toast.error("No se pudo iniciar sesión", { description: text });
+          return;
+        }
+        if (!data.session) {
+          setFormMessage({ kind: "error", text: "No se recibió una sesión válida. Intenta nuevamente." });
+          return;
+        }
+        setFormMessage({ kind: "success", text: "Acceso correcto. Cargando tu perfil…" });
+      } else {
+        const { data, error } = await supabase.auth.signUp({ email: email.trim(), password, options: { data: { full_name: fullName.trim() } } });
+        if (error) {
+          setFormMessage({ kind: "error", text: error.message });
+          toast.error("No se pudo crear la cuenta", { description: error.message });
+          return;
+        }
+        const text = data.session ? "Cuenta creada correctamente." : "Cuenta creada. Revisa tu correo y confirma el enlace antes de entrar.";
+        setFormMessage({ kind: "success", text });
+        toast.success("Cuenta creada", { description: text });
+      }
+    } catch {
+      const text = "No fue posible conectar con el servicio. Revisa tu conexión e intenta nuevamente.";
+      setFormMessage({ kind: "error", text });
+      toast.error("Error de conexión", { description: text });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <main className="login-screen"><Toaster position="top-center" richColors/><section className="login-card">
+    <div className="login-brand"><img src="/canaima-logo.svg" alt="Grupo Canaima"/><span>SCANCONTROL</span><small>Control inteligente de productos</small></div>
+    <div className="login-copy"><Badge className="login-badge"><LockKeyhole size={13}/> Acceso protegido</Badge><h1>{mode === "login" ? "Bienvenido" : "Crear cuenta"}</h1><p>{mode === "login" ? "Ingresa con las credenciales asignadas por Grupo Canaima." : "Registra la cuenta y espera que un supervisor asigne tu tienda y función."}</p></div>
+    <form onSubmit={submit} className="login-form">
+      {mode === "signup" && <label>Nombre completo<Input value={fullName} onChange={(event)=>setFullName(event.target.value)} required placeholder="Nombre y apellido" autoComplete="name"/></label>}
+      <label>Correo electrónico<Input value={email} onChange={(event)=>setEmail(event.target.value)} required type="email" placeholder="usuario@empresa.com" autoComplete="email"/></label>
+      <label>Contraseña<Input value={password} onChange={(event)=>setPassword(event.target.value)} required type="password" minLength={8} placeholder="Mínimo 8 caracteres" autoComplete={mode === "login" ? "current-password" : "new-password"}/></label>
+      <Button type="submit" disabled={busy}>{busy && <LoaderCircle className="spin" size={17}/>} {mode === "login" ? "Iniciar sesión" : "Registrar cuenta"}</Button>
+      {formMessage && <p className={`auth-message auth-message-${formMessage.kind}`} role={formMessage.kind === "error" ? "alert" : "status"}>{formMessage.text}</p>}
+    </form>
+    <button className="login-switch" type="button" onClick={()=>{setMode(mode === "login" ? "signup" : "login");setFormMessage(null);}}>{mode === "login" ? "¿Primera vez? Crear una cuenta" : "Ya tengo una cuenta"}</button>
+  </section><aside className="login-side"><div className="login-symbol"><ScanLine size={84}/></div><h2>Consulta precisa.<br/>Evaluación confiable.</h2><p>Catálogos y precios independientes para cada tienda.</p><div className="login-stat"><strong>16</strong><span>tiendas conectadas</span></div></aside></main>;
+}
+
+export default function Home() {
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [stores, setStores] = useState<StoreRecord[]>([]);
+  const [storeId, setStoreId] = useState<string>("");
+  const [booting, setBooting] = useState(true);
+  const [view, setView] = useState<View>("scanner");
+  const [lastProduct, setLastProduct] = useState<Product | null>(null);
+  const [manualCode, setManualCode] = useState("");
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [mobileMenu, setMobileMenu] = useState(false);
+  const [catalogMeta, setCatalogMeta] = useState<CatalogMeta>(null);
+  const [uploading, setUploading] = useState<{ done: number; total: number } | null>(null);
+  const [evaluationId, setEvaluationId] = useState<string | null>(null);
+  const [evaluationItems, setEvaluationItems] = useState<EvaluationItem[]>([]);
+  const [managedProfiles, setManagedProfiles] = useState<ManagedProfile[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [usersError, setUsersError] = useState<string | null>(null);
+  const [savingUserId, setSavingUserId] = useState<string | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [cachedProductCount, setCachedProductCount] = useState(0);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const controlsRef = useRef<IScannerControls | null>(null);
+  const lastScanRef = useRef({ code: "", at: 0 });
+  const scanBusyRef = useRef(false);
+  const evaluationIdRef = useRef<string | null>(null);
+  const evaluationCreatePromiseRef = useRef<Promise<string | null> | null>(null);
+  const productCacheRef = useRef<Map<string,Product>>(new Map());
+  const productCacheStoreRef = useRef("");
+  const productCacheReadyRef = useRef(false);
+
+  const currentStore = stores.find((item)=>item.id === storeId) ?? null;
+  const isEvaluator = profile?.role === "manager" || profile?.role === "supervisor";
+  const roleLabel = profile ? ROLE_LABELS[profile.role] : "";
+  const displayName = profile?.full_name || "Usuario";
+  const initials = displayName.split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("") || "GC";
+
+  const hydrate = useCallback(async (userId: string) => {
+    setBooting(true);
+    const { data: profileData, error: profileError } = await supabase.from("profiles").select("id,full_name,role,store_id,is_active").eq("id", userId).maybeSingle();
+    if (profileError || !profileData) { setProfile(null); setBooting(false); return; }
+    const nextProfile = profileData as Profile;
+    setProfile(nextProfile);
+    const { data: storeData } = await supabase.from("stores").select("id,name,slug").eq("is_active", true).order("name");
+    const nextStores = (storeData ?? []) as StoreRecord[];
+    setStores(nextStores);
+    if (nextProfile.role === "supervisor") setStoreId((current)=>nextStores.some((item)=>item.id === current) ? current : (nextStores[0]?.id ?? ""));
+    else setStoreId(nextProfile.store_id ?? "");
+    setBooting(false);
+  }, []);
+
+  useEffect(()=>{
+    let mounted = true;
+    let hydrationTimer: number | null = null;
+    const applySession = (id: string | null) => {
+      if (!mounted) return;
+      setSessionUserId(id);
+      setBooting(true);
+      if (hydrationTimer !== null) window.clearTimeout(hydrationTimer);
+      hydrationTimer = window.setTimeout(()=>{
+        if (!mounted) return;
+        if (id) void hydrate(id);
+        else { setProfile(null); setStores([]); setStoreId(""); setBooting(false); }
+      }, 0);
+    };
+    supabase.auth.getSession().then(({ data })=>{
+      applySession(data.session?.user.id ?? null);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession)=>{
+      applySession(nextSession?.user.id ?? null);
+    });
+    return ()=>{ mounted=false; if (hydrationTimer !== null) window.clearTimeout(hydrationTimer); listener.subscription.unsubscribe(); controlsRef.current?.stop(); };
+  }, [hydrate]);
+
+  const loadCatalogMeta = useCallback(async (targetStore: string) => {
+    const { data } = await supabase.from("catalog_versions").select("file_name,row_count,activated_at").eq("store_id", targetStore).eq("status", "active").order("activated_at", { ascending:false }).limit(1).maybeSingle();
+    setCatalogMeta(data ? { fileName:data.file_name, rowCount:data.row_count, activatedAt:data.activated_at } : null);
+  }, []);
+
+  const loadProductCache = useCallback(async (targetStore:string) => {
+    productCacheStoreRef.current=targetStore;
+    productCacheReadyRef.current=false;
+    productCacheRef.current=new Map();
+    setCachedProductCount(0);
+    setCatalogLoading(true);
+    const nextCache=new Map<string,Product>();
+    const pageSize=1000;
+    for(let start=0;;start+=pageSize){
+      const {data,error}=await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",targetStore).range(start,start+pageSize-1);
+      if(productCacheStoreRef.current!==targetStore)return;
+      if(error){setCatalogLoading(false);return;}
+      for(const row of data??[]){const product:Product={id:row.id,storeId:row.store_id,barcode:row.barcode,article:row.article,description:row.description??"",color:row.color||"No especificado",size:row.size||"No especificado",style:row.style||"No especificado",amount:Number(row.amount)};nextCache.set(cleanCode(product.barcode),product);}
+      if((data?.length??0)<pageSize)break;
+    }
+    if(productCacheStoreRef.current!==targetStore)return;
+    productCacheRef.current=nextCache;
+    productCacheReadyRef.current=true;
+    setCachedProductCount(nextCache.size);
+    setCatalogLoading(false);
+  },[]);
+
+  const loadEvaluation = useCallback(async (targetStore: string, userId: string, enabled: boolean) => {
+    if (!enabled) { evaluationIdRef.current=null; setEvaluationId(null); setEvaluationItems([]); return; }
+    const { data: evaluation } = await supabase.from("evaluations").select("id").eq("store_id", targetStore).eq("created_by", userId).eq("status", "draft").order("created_at", { ascending:false }).limit(1).maybeSingle();
+    if (!evaluation) { evaluationIdRef.current=null; setEvaluationId(null); setEvaluationItems([]); return; }
+    evaluationIdRef.current=evaluation.id; setEvaluationId(evaluation.id);
+    const { data: rows } = await supabase.from("evaluation_items").select("id,product_id,store_id,barcode,article,description,color,size,style,amount,observation,scanned_at").eq("evaluation_id", evaluation.id).order("scanned_at", { ascending:false });
+    setEvaluationItems((rows ?? []).map((row)=>({ id:row.product_id, storeId:row.store_id, barcode:row.barcode ?? "", article:row.article, description:row.description ?? "", color:row.color ?? "No especificado", size:row.size ?? "No especificado", style:row.style ?? "No especificado", amount:Number(row.amount), rowId:row.id, observation:row.observation as Observation, scannedAt:new Date(row.scanned_at).toLocaleTimeString("es", {hour:"numeric",minute:"2-digit"}) })));
+  }, []);
+
+  const loadManagedProfiles = useCallback(async () => {
+    setUsersLoading(true);
+    setUsersError(null);
+    const { data, error } = await supabase.rpc("supervisor_list_users");
+    if (error) {
+      setManagedProfiles([]);
+      setUsersError("El módulo de usuarios todavía debe activarse en Supabase.");
+      setUsersLoading(false);
+      return;
+    }
+    const rows = (data ?? []) as Array<{ id:string; email:string|null; full_name:string|null; role:string; store_id:string|null; is_active:boolean; created_at:string|null }>;
+    setManagedProfiles(rows.map((row)=>({ ...row, role:row.role as RoleCode })));
+    setUsersLoading(false);
+  }, []);
+
+  useEffect(()=>{
+    if (!storeId || !sessionUserId) return;
+    const task=window.setTimeout(()=>{
+      void loadCatalogMeta(storeId);
+      void loadProductCache(storeId);
+      void loadEvaluation(storeId, sessionUserId, Boolean(isEvaluator));
+    },0);
+    return()=>window.clearTimeout(task);
+  }, [storeId, sessionUserId, isEvaluator, loadCatalogMeta, loadProductCache, loadEvaluation]);
+
+  useEffect(()=>{
+    if (view !== "users" || profile?.role !== "supervisor") return;
+    const task=window.setTimeout(()=>void loadManagedProfiles(),0);
+    return()=>window.clearTimeout(task);
+  },[view,profile?.role,loadManagedProfiles]);
+
+  function selectStore(nextStoreId:string){
+    stopCamera();
+    setLastProduct(null);
+    setCatalogMeta(null);
+    setCachedProductCount(0);
+    productCacheReadyRef.current=false;
+    productCacheRef.current=new Map();
+    setEvaluationItems([]);
+    evaluationIdRef.current=null;
+    evaluationCreatePromiseRef.current=null;
+    setEvaluationId(null);
+    setStoreId(nextStoreId);
+  }
+
+  async function updateManagedProfile(userId:string, patch:Partial<Pick<ManagedProfile,"role"|"store_id"|"is_active">>) {
+    const target=managedProfiles.find((item)=>item.id===userId);
+    if(!target)return;
+    const nextRole=patch.role??target.role;
+    const nextStore=nextRole==="supervisor"?null:(patch.store_id!==undefined?patch.store_id:(target.store_id??stores[0]?.id??null));
+    const nextActive=patch.is_active??target.is_active;
+    if(userId===sessionUserId&&(nextRole!=="supervisor"||!nextActive))return void toast.error("No puedes quitar tu propio acceso de supervisor");
+    if(nextRole!=="supervisor"&&!nextStore)return void toast.error("Selecciona una tienda para esta cuenta");
+    const previous=managedProfiles;
+    setSavingUserId(userId);
+    setManagedProfiles((items)=>items.map((item)=>item.id===userId?{...item,role:nextRole,store_id:nextStore,is_active:nextActive}:item));
+    const {error}=await supabase.from("profiles").update({role:nextRole,store_id:nextStore,is_active:nextActive}).eq("id",userId);
+    if(error){setManagedProfiles(previous);toast.error("No se pudo guardar el acceso",{description:error.message});}
+    else toast.success("Acceso actualizado",{description:target.full_name||target.email||"Usuario"});
+    setSavingUserId(null);
+  }
+
+  async function ensureEvaluation() {
+    if (evaluationIdRef.current) return evaluationIdRef.current;
+    if (evaluationCreatePromiseRef.current) return evaluationCreatePromiseRef.current;
+    if (!sessionUserId || !storeId || !isEvaluator) return null;
+    evaluationCreatePromiseRef.current=(async()=>{
+      const { data, error } = await supabase.from("evaluations").insert({ store_id:storeId, created_by:sessionUserId, status:"draft" }).select("id").single();
+      if (error) { toast.error("No se pudo iniciar la evaluación"); return null; }
+      evaluationIdRef.current=data.id; setEvaluationId(data.id); return data.id as string;
+    })();
+    try{return await evaluationCreatePromiseRef.current;}finally{evaluationCreatePromiseRef.current=null;}
+  }
+
+  async function saveEvaluationProduct(product: Product) {
+    const targetEvaluation = await ensureEvaluation();
+    if (!targetEvaluation) return;
+    const { data, error } = await supabase.from("evaluation_items").insert({ evaluation_id:targetEvaluation, store_id:storeId, product_id:product.id, barcode:product.barcode || null, article:product.article, description:product.description, color:product.color, size:product.size, style:product.style, amount:product.amount, observation:"SIN INCIDENCIAS" }).select("id,scanned_at").single();
+    if (error) return void toast.error("No se pudo guardar el producto evaluado");
+    setEvaluationItems((items)=>[{...product,rowId:data.id,observation:"SIN INCIDENCIAS",scannedAt:new Date(data.scanned_at).toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})},...items]);
+  }
+
+  const registerCode = useCallback(async (rawCode: string, evaluation=false) => {
+    if (!storeId) return;
+    const normalized=cleanCode(rawCode);
+    if (!normalized) return;
+    let product=productCacheStoreRef.current===storeId?productCacheRef.current.get(normalized):undefined;
+    if(!product&&!productCacheReadyRef.current){
+      if(scanBusyRef.current)return;
+      scanBusyRef.current=true;
+      const { data, error } = await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",storeId).eq("barcode",normalized).maybeSingle();
+      scanBusyRef.current=false;
+      if(!error&&data)product={id:data.id,storeId:data.store_id,barcode:data.barcode,article:data.article,description:data.description??"",color:data.color||"No especificado",size:data.size||"No especificado",style:data.style||"No especificado",amount:Number(data.amount)};
+    }
+    if (!product) return void toast.error("Código no encontrado",{description:`${normalized} no existe en el catálogo de ${currentStore?.name ?? "esta tienda"}.`});
+    setLastProduct(product); setManualCode(""); if(navigator.vibrate)navigator.vibrate(80);
+    if(evaluation)void saveEvaluationProduct(product);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[storeId,currentStore?.name,isEvaluator,sessionUserId]);
+
+  async function startCamera(evaluation=false){
+    try{setCameraOpen(true);await new Promise((resolve)=>setTimeout(resolve,120));if(!videoRef.current)return;const reader=new BrowserMultiFormatReader();controlsRef.current=await reader.decodeFromVideoDevice(undefined,videoRef.current,(result)=>{if(!result)return;const scanned=result.getText(),now=Date.now();if(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<1800)return;lastScanRef.current={code:scanned,at:now};void registerCode(scanned,evaluation);});}
+    catch{setCameraOpen(false);toast.error("No se pudo abrir la cámara",{description:"Verifica el permiso de cámara del navegador."});}
+  }
+  function stopCamera(){controlsRef.current?.stop();controlsRef.current=null;setCameraOpen(false);}
+  function goTo(next:View){stopCamera();setView(next);setMobileMenu(false);}
+
+  async function importExcel(file:File){
+    if(!sessionUserId||!storeId)return;
+    let catalogId:string|null=null;
+    try{
+      const workbook=read(await file.arrayBuffer(),{type:"array"});const rows=utils.sheet_to_json<Record<string,unknown>>(workbook.Sheets[workbook.SheetNames[0]],{defval:"",raw:true});const seen=new Set<string>();
+      const products=rows.flatMap((row)=>{const barcode=cleanCode(row["Código barras"]);if(!barcode||seen.has(barcode))return[];seen.add(barcode);const amount=Number(row["Monto a Pagar"]??0);return[{barcode,article:cleanText(row["Artículo"],barcode),description:cleanText(row["Descripción"],""),variant:cleanText(row["Variante"],""),color:cleanText(row["Color"]),size:cleanText(row["Tamaño"]),style:cleanText(row["Estilo"]),amount:Number.isFinite(amount)?amount:0}];});
+      if(!products.length)throw new Error("El archivo no contiene productos válidos");
+      setUploading({done:0,total:products.length});
+      const {data:version,error:versionError}=await supabase.from("catalog_versions").insert({store_id:storeId,file_name:file.name,row_count:0,status:"uploading",uploaded_by:sessionUserId}).select("id").single();
+      if(versionError)throw versionError;catalogId=version.id;
+      const batchSize=400;
+      for(let start=0;start<products.length;start+=batchSize){const batch=products.slice(start,start+batchSize).map((product)=>({...product,catalog_id:catalogId,store_id:storeId}));const {error}=await supabase.from("products").insert(batch);if(error)throw error;setUploading({done:Math.min(start+batch.length,products.length),total:products.length});}
+      const {error:readyError}=await supabase.from("catalog_versions").update({status:"ready",row_count:products.length}).eq("id",catalogId);if(readyError)throw readyError;
+      const {error:activateError}=await supabase.rpc("activate_catalog",{target_catalog:catalogId});if(activateError)throw activateError;
+      await Promise.all([loadCatalogMeta(storeId),loadProductCache(storeId)]);toast.success("Catálogo activado",{description:`${products.length.toLocaleString("es-ES")} productos preparados para consulta instantánea en ${currentStore?.name}.`});
+    }catch(error){if(catalogId)await supabase.from("catalog_versions").update({status:"failed"}).eq("id",catalogId);toast.error("No se pudo cargar el catálogo",{description:error instanceof Error?error.message:"Comprueba el formato del Excel."});}
+    finally{setUploading(null);}
+  }
+
+  async function addWithoutLabel(){
+    const targetEvaluation=await ensureEvaluation();if(!targetEvaluation)return;
+    const {data,error}=await supabase.from("evaluation_items").insert({evaluation_id:targetEvaluation,store_id:storeId,product_id:null,barcode:null,article:"SIN CÓDIGO",description:"Producto sin identificar",color:"No especificado",size:"No especificado",style:"No especificado",amount:0,observation:"SIN ETIQUETA"}).select("id,scanned_at").single();
+    if(error)return void toast.error("No se pudo registrar el producto");
+    setEvaluationItems((items)=>[{id:null,storeId,barcode:"",article:"SIN CÓDIGO",description:"Producto sin identificar",color:"No especificado",size:"No especificado",style:"No especificado",amount:0,rowId:data.id,observation:"SIN ETIQUETA",scannedAt:new Date(data.scanned_at).toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})},...items]);
+    toast.success("Producto sin etiqueta registrado");
+  }
+  async function changeObservation(rowId:string,observation:Observation){const previous=evaluationItems;setEvaluationItems((items)=>items.map((item)=>item.rowId===rowId?{...item,observation}:item));const {error}=await supabase.from("evaluation_items").update({observation}).eq("id",rowId);if(error){setEvaluationItems(previous);toast.error("No se guardó la observación");}}
+  async function deleteEvaluationItem(rowId:string){const {error}=await supabase.from("evaluation_items").delete().eq("id",rowId);if(error)return void toast.error("No se pudo eliminar");setEvaluationItems((items)=>items.filter((item)=>item.rowId!==rowId));}
+
+  const summary=useMemo(()=>OBSERVATIONS.map((observation)=>({observation,count:evaluationItems.filter((item)=>item.observation===observation).length})),[evaluationItems]);
+  const userStats=useMemo(()=>({
+    employees:managedProfiles.filter((item)=>item.role==="employee").length,
+    managers:managedProfiles.filter((item)=>item.role==="manager").length,
+    supervisors:managedProfiles.filter((item)=>item.role==="supervisor").length,
+    pending:managedProfiles.filter((item)=>!item.is_active||(item.role!=="supervisor"&&!item.store_id)).length,
+  }),[managedProfiles]);
+  const viewTitle=view==="scanner"?"Verificar producto":view==="evaluation"?"Evaluación de productos":view==="catalog"?"Catálogo de tienda":"Usuarios y permisos";
+  async function exportEvaluation(){
+    const borders={top:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},bottom:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},left:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},right:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"}};const cell=(value:string,bold=false)=>new TableCell({borders,children:[new Paragraph({children:[new TextRun({text:value,bold})]})]});
+    const doc=new Document({sections:[{children:[new Paragraph({alignment:AlignmentType.CENTER,children:[new TextRun({text:"GRUPO CANAIMA",bold:true,size:30,color:"073F5C"})]}),new Paragraph({alignment:AlignmentType.CENTER,children:[new TextRun({text:"INFORME DE EVALUACIÓN DE PRODUCTOS",bold:true,size:25})]}),new Paragraph(""),new Paragraph({children:[new TextRun({text:"Nombre de la empresa: ____________________________________",bold:true})]}),new Paragraph({children:[new TextRun({text:"Fecha: ____________________",bold:true})]}),new Paragraph(`Tienda evaluada: ${currentStore?.name??""}`),new Paragraph(""),new Paragraph("El presente documento contiene el resultado obtenido durante la evaluación realizada a los productos de la tienda indicada, conforme a las observaciones registradas durante el proceso de verificación."),new Paragraph(""),new Paragraph({children:[new TextRun({text:"Resumen de observaciones",bold:true,size:24,color:"073F5C"})]}),new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:[new TableRow({children:[cell("Observación",true),cell("Cantidad",true)]}),...summary.map((item)=>new TableRow({children:[cell(item.observation),cell(String(item.count))]}))]}),new Paragraph(""),new Paragraph({children:[new TextRun({text:"Detalle de productos evaluados",bold:true,size:24,color:"073F5C"})]}),new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:[new TableRow({children:[cell("Artículo",true),cell("Producto",true),cell("Monto",true),cell("Observación",true)]}),...evaluationItems.map((item)=>new TableRow({children:[cell(item.article),cell(item.description),cell(money.format(item.amount)),cell(item.observation)]}))]}),new Paragraph(""),new Paragraph(""),new Paragraph("________________________      ________________________      ________________________"),new Paragraph("Gerente de tienda 1                Gerente de tienda 2                Supervisor")]}]});
+    const blob=await Packer.toBlob(doc),href=URL.createObjectURL(blob),anchor=document.createElement("a");anchor.href=href;anchor.download=`Evaluacion_${(currentStore?.name??"tienda").replace(/[^a-z0-9]+/gi,"_")}.docx`;anchor.click();setTimeout(()=>URL.revokeObjectURL(href),1000);toast.success("Informe editable generado");
+  }
+
+  async function signOut(){stopCamera();setLastProduct(null);setEvaluationItems([]);await supabase.auth.signOut();}
+
+  if(booting)return <main className="loading-screen"><img src="/canaima-logo.svg" alt="Grupo Canaima"/><LoaderCircle className="spin" size={26}/><span>Preparando ScanControl…</span></main>;
+  if(!sessionUserId)return <LoginScreen/>;
+  if(!profile||!profile.is_active||(!storeId&&profile.role!=="supervisor"))return <main className="pending-screen"><Toaster position="top-center" richColors/><section><div className="pending-icon"><UserRound size={34}/></div><h1>Cuenta pendiente de asignación</h1><p>Un supervisor debe asignar una tienda y un rol antes de que puedas utilizar ScanControl.</p><Button variant="outline" onClick={signOut}><LogOut size={17}/> Cerrar sesión</Button></section></main>;
+
+  return <div className="app-shell"><Toaster position="top-center" richColors/>
+    <aside className={`sidebar ${mobileMenu?"sidebar-open":""}`}><div className="brand-block"><img src="/canaima-logo.svg" alt="Grupo Canaima" className="brand-logo"/><button className="mobile-close" onClick={()=>setMobileMenu(false)} aria-label="Cerrar menú"><X size={20}/></button></div><div className="product-name"><span>SCANCONTROL</span><small>Control inteligente de productos</small></div><nav className="nav-list"><NavItem icon={ScanLine} label="Escanear producto" active={view==="scanner"} onClick={()=>goTo("scanner")}/>{isEvaluator&&<NavItem icon={ClipboardCheck} label="Evaluación" active={view==="evaluation"} onClick={()=>goTo("evaluation")}/>}<NavItem icon={FileSpreadsheet} label="Catálogo Excel" active={view==="catalog"} onClick={()=>goTo("catalog")}/>{profile.role==="supervisor"&&<NavItem icon={Users} label="Usuarios y permisos" active={view==="users"} onClick={()=>goTo("users")}/>}</nav><div className="sidebar-store"><div className="store-mark"><Building2 size={18}/></div><div><span>Tienda activa</span><strong>{currentStore?.name??"Seleccionar tienda"}</strong></div></div><button className="sidebar-user" type="button" onClick={signOut}><div className="avatar">{initials}</div><div><strong>{displayName}</strong><span>{roleLabel}</span></div><LogOut size={18}/></button></aside>
+    <main className="workspace"><header className="topbar"><button className="mobile-menu" onClick={()=>setMobileMenu(true)} aria-label="Abrir menú"><Menu size={22}/></button><div className="topbar-title"><p className="eyebrow">GRUPO CANAIMA · OPERACIONES</p><h1>{viewTitle}</h1></div><div className="topbar-controls">{profile.role==="supervisor"&&view!=="users"&&<><div className="desktop-store-switcher"><Select value={storeId} onValueChange={selectStore}><SelectTrigger className="store-select"><Store size={16}/><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((item)=><SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div><label className="mobile-store-switcher" aria-label="Seleccionar tienda"><Store size={18}/><select value={storeId} onChange={(event)=>selectStore(event.target.value)} aria-label="Seleccionar tienda">{stores.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label></>}<Badge className="role-badge"><ShieldCheck size={14}/>{roleLabel}</Badge></div></header>
+
+      {view==="scanner"&&<section className="page-content scanner-layout"><div className="scan-panel"><div className="section-heading"><div><Badge className="status-badge"><span className={`status-dot ${catalogLoading?"status-dot-loading":""}`}/> {catalogLoading?"Preparando catálogo…":`Lector instantáneo · ${cachedProductCount.toLocaleString("es-ES")} productos`}</Badge><h2>Escaneo continuo</h2><p>Apunta la cámara al código. El resultado aparecerá al instante y el lector seguirá activo.</p></div><div className="store-pill"><Store size={16}/><span>{currentStore?.name}</span></div></div>{cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline/><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Compatible con EAN-13, UPC y Code 128</small></button>}<div className="manual-entry"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div></div>
+        <div className={`result-panel ${lastProduct?"":"result-empty"}`}>{lastProduct?<><div className="result-success"><CheckCircle2 size={20}/><span>Producto encontrado</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO / ARTÍCULO</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div><span>TAMAÑO</span><strong>{lastProduct.size}</strong></div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div></>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div></section>}
+
+      {view==="evaluation"&&isEvaluator&&<section className="page-content evaluation-page"><div className="evaluation-toolbar"><div><Badge variant="outline">{evaluationId?"Evaluación en curso":"Lista para iniciar"}</Badge><h2>Registro de verificación</h2><p>Cada lectura se guarda con “Sin incidencias” y puede corregirse al instante.</p></div><div className="toolbar-actions"><Button variant="outline" onClick={addWithoutLabel}>Registrar sin etiqueta</Button><Button onClick={()=>startCamera(true)}><Camera size={17}/> Escanear continuamente</Button></div></div>{cameraOpen&&<div className="evaluation-camera"><video ref={videoRef} muted playsInline/><div><strong>Cámara activa</strong><span>Los productos se agregan y guardan automáticamente.</span></div><Button variant="outline" onClick={stopCamera}>Detener</Button></div>}<div className="summary-grid">{summary.map((item)=><div key={item.observation}><span>{item.observation}</span><strong>{item.count}</strong></div>)}</div><div className="data-card"><div className="data-card-head"><div><strong>Productos evaluados</strong><span>{evaluationItems.length} registros guardados</span></div><Button variant="outline" onClick={exportEvaluation} disabled={!evaluationItems.length}><Download size={17}/> Descargar Word editable</Button></div><div className="evaluation-table-wrap"><table className="evaluation-table"><thead><tr><th>Código / artículo</th><th>Descripción</th><th>Detalles</th><th>Monto</th><th>Observación</th><th/></tr></thead><tbody>{evaluationItems.length?evaluationItems.map((item)=><tr key={item.rowId}><td><strong>{item.article}</strong><span>{item.scannedAt}</span></td><td>{item.description}</td><td>{item.color} · {item.size}</td><td><strong>{money.format(item.amount)}</strong></td><td><Select value={item.observation} onValueChange={(value)=>void changeObservation(item.rowId,value as Observation)}><SelectTrigger className="observation"><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></td><td><button className="delete-row" onClick={()=>void deleteEvaluationItem(item.rowId)}><X size={16}/></button></td></tr>):<tr><td colSpan={6} className="empty-table">Aún no hay productos en esta evaluación.</td></tr>}</tbody></table></div></div></section>}
+
+      {view==="catalog"&&<section className="page-content catalog-page"><div className="catalog-intro"><div className="catalog-icon"><FileSpreadsheet size={30}/></div><div><Badge variant="outline">Catálogo independiente</Badge><h2>Excel de {currentStore?.name}</h2><p>Este archivo solo modifica los productos y precios de la tienda activa. Las otras 15 tiendas permanecerán sin cambios.</p></div></div><div className="catalog-grid"><label className={`upload-card ${uploading?"uploading":""}`}><input type="file" disabled={Boolean(uploading)} accept=".xlsx,.xls" onChange={(event)=>{const file=event.target.files?.[0];if(file)void importExcel(file);event.currentTarget.value=""}}/>{uploading?<><LoaderCircle className="spin upload-icon-plain" size={36}/><strong>Cargando {uploading.done.toLocaleString("es-ES")} de {uploading.total.toLocaleString("es-ES")}</strong><div className="upload-progress"><span style={{width:`${Math.round(uploading.done/uploading.total*100)}%`}}/></div><small>No cierres esta pantalla</small></>:<><div className="upload-icon"><Upload size={28}/></div><strong>Cargar o reemplazar Excel</strong><span>Selecciona el inventario de esta tienda</span><small>Formato .XLSX o .XLS · Máximo 20 MB</small></>}</label><div className="catalog-status"><div className="status-head"><span>CATÁLOGO ACTIVO</span><Badge className={catalogMeta?"active-catalog":"empty-catalog"}>{catalogMeta?"Actualizado":"Sin catálogo"}</Badge></div><FileSpreadsheet size={38}/><h3>{catalogMeta?.fileName??"No se ha cargado un archivo"}</h3><p>{(catalogMeta?.rowCount??0).toLocaleString("es-ES")} productos disponibles</p><div className="catalog-meta"><div><span>Tienda</span><strong>{currentStore?.name}</strong></div><div><span>Alcance</span><strong>Solo esta tienda</strong></div></div></div></div><div className="safety-note"><ShieldCheck size={22}/><div><strong>Importación segura por tienda</strong><p>El catálogo de una sucursal nunca modifica el de las demás. La versión anterior queda conservada.</p></div></div></section>}
+
+      {view==="users"&&profile.role==="supervisor"&&<section className="page-content users-page"><div className="users-intro"><div><Badge className="status-badge"><ShieldCheck size={14}/> Solo supervisores</Badge><h2>Usuarios y permisos</h2><p>Asigna a cada cuenta su función y tienda. Los cambios se guardan inmediatamente.</p></div><Button variant="outline" onClick={()=>void loadManagedProfiles()} disabled={usersLoading||Boolean(savingUserId)}><RefreshCw className={usersLoading?"spin":""} size={16}/> Actualizar</Button></div><div className="user-summary"><div><span>EMPLEADOS</span><strong>{userStats.employees}</strong></div><div><span>GERENTES</span><strong>{userStats.managers}</strong></div><div><span>SUPERVISORES</span><strong>{userStats.supervisors}</strong></div><div><span>PENDIENTES</span><strong>{userStats.pending}</strong></div></div>{usersError?<div className="users-setup"><div className="pending-icon"><Users size={32}/></div><h3>Falta activar este módulo</h3><p>{usersError} Ejecuta el SQL de “Usuarios y permisos” una sola vez y luego pulsa Actualizar.</p></div>:usersLoading?<div className="users-loading"><LoaderCircle className="spin" size={28}/><span>Cargando cuentas registradas…</span></div>:<div className="users-card"><div className="data-card-head"><div><strong>Cuentas registradas</strong><span>{managedProfiles.length} usuarios encontrados</span></div><Badge variant="outline">Asignación por tienda</Badge></div><div className="users-table-wrap"><table className="users-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Tienda asignada</th><th>Acceso</th></tr></thead><tbody>{managedProfiles.length?managedProfiles.map((item)=><tr key={item.id}><td><div className="managed-user"><div className="managed-avatar">{(item.full_name||item.email||"U").split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("")}</div><div><strong>{item.full_name||"Nombre no indicado"}</strong><span>{item.email||`Cuenta ${item.id.slice(0,8)}`}</span>{item.id===sessionUserId&&<Badge className="self-badge">Tu cuenta</Badge>}</div></div></td><td><Select value={item.role} disabled={item.id===sessionUserId||Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{role:value as RoleCode})}><SelectTrigger className="user-role-select"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></td><td>{item.role==="supervisor"?<div className="all-stores"><Store size={15}/> Todas las tiendas</div>:<Select value={item.store_id??undefined} disabled={Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{store_id:value})}><SelectTrigger className="user-store-select"><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select>}</td><td><div className="access-toggle"><Switch checked={item.is_active} disabled={item.id===sessionUserId||Boolean(savingUserId)} onCheckedChange={(checked)=>void updateManagedProfile(item.id,{is_active:checked})} aria-label={`Acceso de ${item.full_name||item.email||"usuario"}`}/><span className={item.is_active?"access-active":"access-inactive"}>{savingUserId===item.id?"Guardando…":item.is_active?"Activo":"Desactivado"}</span></div></td></tr>):<tr><td colSpan={4} className="empty-table">Aún no hay cuentas registradas.</td></tr>}</tbody></table></div></div>}</section>}
+    </main>
+  </div>;
+}

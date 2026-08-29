@@ -1,3 +1,3 @@
 # Canaima ScanControl
 
-Aplicación móvil de Grupo Canaima para consulta continua de productos y evaluaciones por tienda.
+Aplicación web móvil de Grupo Canaima para escaneo continuo de productos, consulta de precios por tienda, carga de catálogos Excel y evaluaciones con reportes editables.

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Grupo Canaima">
+  <rect width="128" height="128" rx="24" fill="#ffffff"/>
+  <g fill="none" stroke="#073b5c" stroke-width="16"><path d="M22 58a42 42 0 0 1 84 0"/><path d="M106 70a42 42 0 0 1-84 0"/></g>
+  <path fill="#bfd532" d="M78 46a27 27 0 1 0 0 36L66 70a10 10 0 1 1 0-12z"/>
+</svg>
