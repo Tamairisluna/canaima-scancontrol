@@ -56,38 +56,28 @@ type ExtendedCameraConstraintSet = MediaTrackConstraintSet & {
   zoom?: number;
 };
 
-function cameraDeviceScore(device: MediaDeviceInfo, index: number) {
-  const label = device.label.toLowerCase();
-  let score = 0;
-  if (/back|rear|environment|traser/.test(label)) score += 100;
-  if (/main|principal|standard|1\s?[x×]/.test(label)) score += 45;
-  if (/front|user|selfie|frontal/.test(label)) score -= 220;
-  if (/ultra[\s-]?wide|ultra gran|0[.,]5\s?[x×]?/.test(label)) score -= 240;
-  if (/macro|telephoto|telefoto/.test(label)) score -= 90;
-  const camera2Index = label.match(/camera2\s+(\d+)/)?.[1];
-  if (camera2Index === "0") score += 55;
-  if (!label) score -= 20 + index;
-  return score;
-}
-
-function selectMainRearCamera(devices: MediaDeviceInfo[]) {
-  const candidates = devices.filter((device) => device.kind === "videoinput" && device.label);
-  if (!candidates.length) return undefined;
-  return candidates
-    .map((device, index) => ({ device, score: cameraDeviceScore(device, index) }))
-    .sort((left, right) => right.score - left.score)[0]?.device;
-}
-
-function cameraConstraints(deviceId?: string): MediaStreamConstraints {
+function cameraConstraints(exactEnvironment = true): MediaStreamConstraints {
   return {
     audio: false,
     video: {
-      ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: "environment" } }),
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
+      facingMode: exactEnvironment ? { exact: "environment" } : { ideal: "environment" },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
       frameRate: { ideal: 30, min: 20 },
     },
   };
+}
+
+async function openMainRearCamera() {
+  try {
+    // Let the browser/OS choose its default rear camera. On multi-lens phones this is
+    // the same camera family the native camera app exposes as the normal 1× view.
+    return await navigator.mediaDevices.getUserMedia(cameraConstraints(true));
+  } catch (error) {
+    const recoverable = error instanceof DOMException && ["OverconstrainedError", "NotFoundError", "ConstraintNotSatisfiedError"].includes(error.name);
+    if (!recoverable) throw error;
+    return navigator.mediaDevices.getUserMedia(cameraConstraints(false));
+  }
 }
 
 async function optimizeCamera(stream: MediaStream) {
@@ -96,10 +86,17 @@ async function optimizeCamera(stream: MediaStream) {
   const capabilities = track.getCapabilities?.() as ExtendedCameraCapabilities | undefined;
   const advanced: ExtendedCameraConstraintSet = {};
   if (capabilities?.focusMode?.includes("continuous")) advanced.focusMode = "continuous";
+  // Keep the phone at its true 1× view. If the browser exposes a logical multi-lens
+  // rear camera (for example 0.5×–10×), asking for zoom 1 selects the normal lens.
   if (capabilities?.zoom && capabilities.zoom.min <= 1 && capabilities.zoom.max >= 1) advanced.zoom = 1;
-  if (Object.keys(advanced).length) {
-    try { await track.applyConstraints({ advanced: [advanced] }); } catch { /* El enfoque automático del dispositivo sigue disponible. */ }
-  }
+  try {
+    await track.applyConstraints({
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      frameRate: { ideal: 30 },
+      ...(Object.keys(advanced).length ? { advanced: [advanced] } : {}),
+    });
+  } catch { /* Conserva el autofocus y la resolución que entregue el dispositivo. */ }
   return { focus: Boolean(advanced.focusMode), zoom: advanced.zoom === 1 };
 }
 
@@ -441,25 +438,14 @@ export default function Home() {
       }
       if(!videoElement)throw new Error("No se pudo preparar la vista de la cámara");
 
-      let devices=await navigator.mediaDevices.enumerateDevices();
-      let preferredCamera=selectMainRearCamera(devices);
-      let stream=await navigator.mediaDevices.getUserMedia(cameraConstraints(preferredCamera?.deviceId));
+      let stream=await openMainRearCamera();
 
-      if(!preferredCamera){
-        devices=await navigator.mediaDevices.enumerateDevices();
-        preferredCamera=selectMainRearCamera(devices);
-        const currentDeviceId=stream.getVideoTracks()[0]?.getSettings().deviceId;
-        if(preferredCamera?.deviceId&&preferredCamera.deviceId!==currentDeviceId){
-          stream.getTracks().forEach((track)=>track.stop());
-          stream=await navigator.mediaDevices.getUserMedia(cameraConstraints(preferredCamera.deviceId));
-        }
-      }
 
       if(cameraSession!==cameraSessionRef.current){stream.getTracks().forEach((track)=>track.stop());return;}
       const optimization=await optimizeCamera(stream);
       const reader=new BrowserMultiFormatOneDReader(undefined,{delayBetweenScanAttempts:60,delayBetweenScanSuccess:120});
       reader.possibleFormats=GARMENT_BARCODE_FORMATS;
-      setCameraStatus(optimization.focus?"Cámara principal 1× · enfoque continuo":"Cámara trasera principal 1×");
+      setCameraStatus(optimization.focus?"Cámara trasera principal 1× · enfoque continuo":"Cámara trasera principal 1× · autofocus del dispositivo");
       controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
         if(!result)return;
         const scanned=normalizeBarcode(result.getText()),now=Date.now();
