@@ -1,13 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 210" role="img" aria-labelledby="title">
   <title id="title">Grupo Canaima ScanControl</title>
-  <g transform="translate(10 15)">
-    <path d="M90 8 158 47v78l-68 39-68-39V47z" fill="none" stroke="#ffffff" stroke-width="18" stroke-linejoin="round"/>
-    <path d="M89 49 126 69v40l-37 21-37-21V69z" fill="#c7d72f" opacity=".96"/>
-    <path d="M88 69 109 81 88 93 67 81z" fill="#082f49" opacity=".85"/>
+  <defs>
+    <linearGradient id="whiteC" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#dfe8ed"/>
+    </linearGradient>
+    <linearGradient id="limeC" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#d5e43f"/>
+      <stop offset="1" stop-color="#aebb20"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(20 18)">
+    <!-- C hexagonal abierto, fiel al isotipo aprobado -->
+    <path d="M132 27 89 3 37 33v66l52 30 43-24" fill="none" stroke="url(#whiteC)" stroke-width="19" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M106 52 82 39 59 52v29l23 13 24-13" fill="none" stroke="url(#limeC)" stroke-width="13" stroke-linecap="square" stroke-linejoin="miter"/>
+    <path d="M70 60 91 71 70 82z" fill="#0b3650"/>
   </g>
   <g font-family="Inter,Segoe UI,Arial,sans-serif">
-    <text x="205" y="73" fill="#ffffff" font-size="27" font-weight="700" letter-spacing="8">GRUPO CANAIMA</text>
-    <text x="203" y="135" fill="#ffffff" font-size="50" font-weight="800" letter-spacing="1">SCAN</text>
-    <text x="335" y="135" fill="#c7d72f" font-size="50" font-weight="800" letter-spacing="1">CONTROL</text>
+    <text x="180" y="78" fill="#ffffff" font-size="25" font-weight="700" letter-spacing="7">GRUPO CANAIMA</text>
+    <text x="179" y="135" fill="#ffffff" font-size="48" font-weight="800" letter-spacing="0">SCAN</text>
+    <text x="305" y="135" fill="#c7d72f" font-size="48" font-weight="800" letter-spacing="0">CONTROL</text>
   </g>
 </svg>
