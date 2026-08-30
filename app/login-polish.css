@@ -1,4 +1,4 @@
-/* Ajustes finales del login aprobado: solo vectores, sin fotos ni recortes raster. */
+/* Ajustes finales del login aprobado. */
 .login-reference .login-reference-brand{
   width:205px!important;
   height:125px!important;
@@ -17,18 +17,18 @@
   filter:drop-shadow(0 6px 12px rgba(0,20,32,.08));
 }
 .login-reference .login-reference-hero{
-  top:76px!important;
-  right:3px!important;
-  width:183px!important;
-  height:277px!important;
-  background-image:url('/login-scanner-reference.svg')!important;
-  background-position:center!important;
+  top:58px!important;
+  right:-8px!important;
+  width:214px!important;
+  height:322px!important;
+  background-image:url('/login-hero-exact.webp?v=2')!important;
+  background-position:center top!important;
   background-size:contain!important;
   background-repeat:no-repeat!important;
-  -webkit-mask-image:none!important;
-  mask-image:none!important;
+  -webkit-mask-image:radial-gradient(ellipse at 58% 46%,#000 58%,rgba(0,0,0,.98) 72%,rgba(0,0,0,.72) 86%,transparent 100%)!important;
+  mask-image:radial-gradient(ellipse at 58% 46%,#000 58%,rgba(0,0,0,.98) 72%,rgba(0,0,0,.72) 86%,transparent 100%)!important;
   opacity:.98!important;
-  filter:drop-shadow(0 18px 30px rgba(0,17,28,.30))!important;
+  filter:drop-shadow(0 18px 30px rgba(0,17,28,.25))!important;
 }
 .login-reference .login-reference-copy{margin-top:1px!important}
 .login-reference .login-reference-copy h1{font-size:41px!important;font-weight:520!important}
@@ -42,12 +42,12 @@
 @media(max-width:390px){
   .login-reference .login-reference-brand{width:194px!important;height:118px!important}
   .login-reference .login-reference-brand img{width:194px!important;max-width:194px!important}
-  .login-reference .login-reference-hero{top:72px!important;right:-4px!important;width:172px!important;height:260px!important}
+  .login-reference .login-reference-hero{top:58px!important;right:-10px!important;width:202px!important;height:303px!important}
   .login-reference .login-reference-copy h1{font-size:39px!important}
 }
 
 @media(max-height:760px){
   .login-reference .login-reference-brand{width:184px!important;height:110px!important}
   .login-reference .login-reference-brand img{width:184px!important;max-width:184px!important}
-  .login-reference .login-reference-hero{top:54px!important;width:160px!important;height:242px!important}
+  .login-reference .login-reference-hero{top:46px!important;right:-8px!important;width:185px!important;height:278px!important}
 }
