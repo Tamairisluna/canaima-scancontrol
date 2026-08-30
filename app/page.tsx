@@ -5,7 +5,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 import { BarcodeFormat, BrowserMultiFormatOneDReader, type IScannerControls } from "@zxing/browser";
 import { read } from "xlsx";
 import { AlignmentType, BorderStyle, Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
-import { Barcode, Building2, Camera, CheckCircle2, ChevronRight, CircleDollarSign, ClipboardCheck, Download, FileSpreadsheet, Hand, KeyRound, LoaderCircle, LockKeyhole, LogOut, Mail, Menu, PackageSearch, Plus, RefreshCw, ScanLine, ShieldCheck, Store, Tags, Upload, UserRound, UserPlus, Users, X } from "lucide-react";
+import { Barcode, Building2, Camera, CheckCircle2, ChevronRight, CircleDollarSign, ClipboardCheck, Download, Eye, EyeOff, FileSpreadsheet, Hand, KeyRound, LoaderCircle, LockKeyhole, LogIn, LogOut, Mail, Menu, PackageSearch, Plus, RefreshCw, ScanLine, ShieldCheck, Store, Tags, Upload, UserRound, UserPlus, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -108,14 +108,28 @@ function LoginScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [remember, setRemember] = useState(true);
   const [formMessage, setFormMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
+
+  useEffect(()=>{
+    try {
+      const saved = window.localStorage.getItem("scancontrol-login-email");
+      if (saved) setEmail(saved);
+    } catch {}
+  }, []);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setFormMessage(null);
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      const normalizedEmail = email.trim();
+      try {
+        if (remember) window.localStorage.setItem("scancontrol-login-email", normalizedEmail);
+        else window.localStorage.removeItem("scancontrol-login-email");
+      } catch {}
+      const { data, error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
       if (error) {
         const text = error.code === "email_not_confirmed"
           ? "Debes confirmar primero el enlace enviado a tu correo."
@@ -140,23 +154,57 @@ function LoginScreen() {
     }
   }
 
-  return <main className="login-screen"><Toaster position="top-center" richColors/>
-    <aside className="login-side">
-      <Image src="/canaima-logo-sidebar.svg" alt="Grupo Canaima" className="login-side-logo" width={520} height={100} priority/>
-      <div className="login-side-copy"><div className="login-symbol"><ScanLine size={45}/></div><p className="login-kicker">PLATAFORMA OPERATIVA</p><h2>Consulta precisa.<br/>Evaluación confiable.</h2><p>Catálogos y precios independientes para cada tienda, disponibles desde cualquier dispositivo.</p></div>
-      <div className="login-stat"><strong>16</strong><span>tiendas conectadas<br/>en una sola plataforma</span></div>
-    </aside>
-    <section className="login-panel"><div className="login-card">
-      <div className="login-brand"><Image src="/canaima-logo.svg" alt="Grupo Canaima" width={480} height={250} priority/><div><span>SCANCONTROL</span><small>Control inteligente de productos</small></div></div>
-      <div className="login-copy"><Badge className="login-badge"><LockKeyhole size={13}/> Acceso protegido</Badge><h1>Bienvenido</h1><p>Ingresa con las credenciales asignadas por el administrador de Grupo Canaima.</p></div>
-      <form onSubmit={submit} className="login-form">
-        <label><span><Mail size={14}/> Correo electrónico</span><Input value={email} onChange={(event)=>setEmail(event.target.value)} required type="email" placeholder="usuario@empresa.com" autoComplete="email"/></label>
-        <label><span><KeyRound size={14}/> Contraseña</span><Input value={password} onChange={(event)=>setPassword(event.target.value)} required type="password" minLength={8} placeholder="Ingresa tu contraseña" autoComplete="current-password"/></label>
-        <Button className="login-submit" type="submit" disabled={busy}>{busy?<><LoaderCircle className="spin" size={17}/> Iniciando…</>:<><LockKeyhole size={17}/> Iniciar sesión</>}</Button>
+  async function recoverPassword() {
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail) {
+      setFormMessage({ kind: "error", text: "Escribe tu correo electrónico para enviarte el enlace de recuperación." });
+      return;
+    }
+    const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, { redirectTo: window.location.origin });
+    if (error) {
+      const text = "No se pudo enviar el correo de recuperación. Intenta nuevamente.";
+      setFormMessage({ kind: "error", text });
+      toast.error("No se pudo enviar el enlace", { description: text });
+      return;
+    }
+    const text = "Revisa tu correo. Te enviamos un enlace para restablecer tu contraseña.";
+    setFormMessage({ kind: "success", text });
+    toast.success("Enlace de recuperación enviado");
+  }
+
+  return <main className="login-screen login-reference"><Toaster position="top-center" richColors/>
+    <section className="login-reference-shell">
+      <div className="login-reference-brand"><Image src="/login-logo-reference.svg" alt="Grupo Canaima ScanControl" width={255} height={175} priority/></div>
+      <div className="login-reference-hero" aria-hidden="true"/>
+
+      <div className="login-reference-copy">
+        <h1>Bienvenido</h1>
+        <span className="login-reference-accent"/>
+        <div className="login-reference-secure"><strong>Acceso protegido</strong><ShieldCheck/></div>
+        <p>Ingresa con tus credenciales para continuar.</p>
+      </div>
+
+      <form onSubmit={submit} className="login-reference-form">
+        <label className="login-reference-field">
+          <span className="login-reference-field-icon"><Mail/></span>
+          <span className="login-reference-field-copy"><span className="login-reference-field-label">Correo electrónico</span><Input value={email} onChange={(event)=>setEmail(event.target.value)} required type="email" placeholder="ejemplo@empresa.com" autoComplete="email"/></span>
+        </label>
+        <label className="login-reference-field">
+          <span className="login-reference-field-icon"><LockKeyhole/></span>
+          <span className="login-reference-field-copy"><span className="login-reference-field-label">Contraseña</span><Input value={password} onChange={(event)=>setPassword(event.target.value)} required type={showPassword ? "text" : "password"} minLength={8} placeholder="Ingresa tu contraseña" autoComplete="current-password"/></span>
+          <button className="login-reference-eye" type="button" aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"} onClick={()=>setShowPassword((value)=>!value)}>{showPassword ? <EyeOff/> : <Eye/>}</button>
+        </label>
+        <div className="login-reference-options">
+          <label className="login-reference-remember"><input type="checkbox" checked={remember} onChange={(event)=>setRemember(event.target.checked)}/><span>Recordarme en este dispositivo</span></label>
+          <button className="login-reference-forgot" type="button" onClick={()=>void recoverPassword()}>¿Olvidaste tu contraseña?</button>
+        </div>
+        <Button className="login-reference-submit" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin"/> Iniciando…</> : <><LogIn/> Iniciar sesión</>}</Button>
         {formMessage && <p className={`auth-message auth-message-${formMessage.kind}`} role={formMessage.kind === "error" ? "alert" : "status"}>{formMessage.text}</p>}
       </form>
-      <div className="login-admin-note"><ShieldCheck size={17}/><p><strong>Acceso administrado</strong><span>Las cuentas son creadas exclusivamente por Romer.</span></p></div>
-    </div></section>
+
+      <div className="login-reference-protected"><span className="login-reference-shield"><ShieldCheck/></span><p><strong>Tus datos están protegidos</strong><span>Usamos cifrado y buenas prácticas<br/>de seguridad empresarial.</span></p></div>
+      <footer className="login-reference-footer"><div><Store/><span>GRUPO CANAIMA · OPERACIONES</span></div><small>Versión 2.0.0</small></footer>
+    </section>
   </main>;
 }
 
