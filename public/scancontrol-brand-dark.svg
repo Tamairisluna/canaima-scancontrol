@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 210" role="img" aria-labelledby="title">
+  <title id="title">Grupo Canaima ScanControl</title>
+  <g transform="translate(10 15)">
+    <path d="M90 8 158 47v78l-68 39-68-39V47z" fill="none" stroke="#ffffff" stroke-width="18" stroke-linejoin="round"/>
+    <path d="M89 49 126 69v40l-37 21-37-21V69z" fill="#c7d72f" opacity=".96"/>
+    <path d="M88 69 109 81 88 93 67 81z" fill="#082f49" opacity=".85"/>
+  </g>
+  <g font-family="Inter,Segoe UI,Arial,sans-serif">
+    <text x="205" y="73" fill="#ffffff" font-size="27" font-weight="700" letter-spacing="8">GRUPO CANAIMA</text>
+    <text x="203" y="135" fill="#ffffff" font-size="50" font-weight="800" letter-spacing="1">SCAN</text>
+    <text x="335" y="135" fill="#c7d72f" font-size="50" font-weight="800" letter-spacing="1">CONTROL</text>
+  </g>
+</svg>
