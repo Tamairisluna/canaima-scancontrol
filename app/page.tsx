@@ -443,14 +443,22 @@ export default function Home() {
 
       if(cameraSession!==cameraSessionRef.current){stream.getTracks().forEach((track)=>track.stop());return;}
       const optimization=await optimizeCamera(stream);
-      const reader=new BrowserMultiFormatOneDReader(undefined,{delayBetweenScanAttempts:60,delayBetweenScanSuccess:120});
+      const reader=new BrowserMultiFormatOneDReader(undefined,{delayBetweenScanAttempts:20,delayBetweenScanSuccess:40});
       reader.possibleFormats=GARMENT_BARCODE_FORMATS;
       setCameraStatus(optimization.focus?"Cámara trasera principal 1× · enfoque continuo":"Cámara trasera principal 1× · autofocus del dispositivo");
       controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
-        if(!result)return;
-        const scanned=normalizeBarcode(result.getText()),now=Date.now();
-        if(!scanned||(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<5000))return;
+        const now=Date.now();
+        if(!result){
+          // As soon as the previous barcode leaves the frame, let that same code be read again.
+          // Different barcodes are never blocked by this gate.
+          if(lastScanRef.current.code&&now-lastScanRef.current.at>450)lastScanRef.current={code:"",at:0};
+          return;
+        }
+        const scanned=normalizeBarcode(result.getText());
+        if(!scanned)return;
+        const sameCodeStillVisible=scanned===lastScanRef.current.code&&now-lastScanRef.current.at<900;
         lastScanRef.current={code:scanned,at:now};
+        if(sameCodeStillVisible)return;
         void registerCode(scanned,evaluation);
       });
     }
