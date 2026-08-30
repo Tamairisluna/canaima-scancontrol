@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import "./visual-refresh.css";
 import "./login-exact.css";
+import "./login-reference.css";
 
 export const metadata: Metadata = {
   title: "Canaima ScanControl",
