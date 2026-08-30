@@ -59,14 +59,18 @@
 .login-reference .login-reference-hero{
   position:absolute;
   z-index:-1;
-  top:76px;
-  right:-10px;
-  width:186px;
-  height:282px;
-  background:url('/login-scanner-reference.svg') center/contain no-repeat;
-  -webkit-mask-image:radial-gradient(ellipse at 58% 48%,#000 52%,rgba(0,0,0,.94) 69%,transparent 100%);
-  mask-image:radial-gradient(ellipse at 58% 48%,#000 52%,rgba(0,0,0,.94) 69%,transparent 100%);
-  filter:drop-shadow(0 18px 30px rgba(0,17,28,.26));
+  top:72px;
+  right:-15px;
+  width:198px;
+  height:306px;
+  background-image:url('/login-hero-exact.webp');
+  background-position:center;
+  background-size:cover;
+  background-repeat:no-repeat;
+  opacity:.98;
+  -webkit-mask-image:radial-gradient(ellipse at 56% 45%,#000 48%,rgba(0,0,0,.96) 67%,rgba(0,0,0,.55) 82%,transparent 100%);
+  mask-image:radial-gradient(ellipse at 56% 45%,#000 48%,rgba(0,0,0,.96) 67%,rgba(0,0,0,.55) 82%,transparent 100%);
+  filter:drop-shadow(0 18px 30px rgba(0,17,28,.22));
   pointer-events:none;
 }
 .login-reference .login-reference-copy{
@@ -281,7 +285,7 @@
   .login-reference .login-reference-shell{padding:24px 24px 16px}
   .login-reference .login-reference-brand{width:202px;height:120px}
   .login-reference .login-reference-brand img{width:202px!important;height:139px!important}
-  .login-reference .login-reference-hero{top:74px;right:-17px;width:178px;height:270px}
+  .login-reference .login-reference-hero{top:70px;right:-21px;width:190px;height:292px}
   .login-reference .login-reference-copy h1{font-size:40px!important}
   .login-reference .login-reference-form{margin-top:19px}
 }
@@ -289,7 +293,7 @@
   .login-reference .login-reference-shell{padding-top:18px;padding-bottom:12px}
   .login-reference .login-reference-brand{height:105px;width:190px}
   .login-reference .login-reference-brand img{width:190px!important;height:131px!important}
-  .login-reference .login-reference-hero{top:56px;width:166px;height:251px}
+  .login-reference .login-reference-hero{top:54px;right:-16px;width:174px;height:269px}
   .login-reference .login-reference-copy h1{font-size:37px!important}
   .login-reference .login-reference-accent{margin:10px 0 13px}
   .login-reference .login-reference-form{margin-top:15px;padding:12px;gap:8px}
