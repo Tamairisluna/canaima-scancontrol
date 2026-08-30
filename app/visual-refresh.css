@@ -1,0 +1,193 @@
+/* ScanControl visual refresh — preserves all product logic and camera behavior */
+:root{
+  --sc-navy:#082f49;
+  --sc-navy-2:#0b4868;
+  --sc-blue:#0e7490;
+  --sc-blue-soft:#eaf4f8;
+  --sc-blue-wash:#f3f8fb;
+  --sc-lime:#c7d72f;
+  --sc-ink:#102a3a;
+  --sc-muted:#71808a;
+  --sc-line:#dfe8ec;
+  --sc-canvas:#f5f8fa;
+}
+
+body{background:var(--sc-canvas);color:var(--sc-ink)}
+
+/* LOGIN — definitive dark premium concept */
+.login-screen{background:#061f31!important}
+.login-side{background:
+  radial-gradient(circle at 78% 18%,rgba(31,132,169,.22),transparent 28%),
+  linear-gradient(155deg,#06263a 0%,#083650 54%,#061f31 100%)!important}
+.login-side:before{border-color:#ffffff0b!important}
+.login-side:after{border-color:#c7d72f12!important}
+.login-side-logo{width:min(350px,78%)!important;filter:none!important;background:transparent!important;box-shadow:none!important;padding:0!important}
+.login-symbol{border-radius:22px!important;background:linear-gradient(145deg,#ffffff11,#ffffff06)!important;border:1px solid #ffffff1d!important;box-shadow:0 22px 50px #00131d52!important}
+.login-kicker{color:var(--sc-lime)!important}
+.login-panel{
+  position:relative;
+  isolation:isolate;
+  background:
+    radial-gradient(circle at 82% 12%,rgba(15,148,184,.20),transparent 28%),
+    radial-gradient(circle at 15% 88%,rgba(199,215,47,.08),transparent 24%),
+    linear-gradient(180deg,#07304a 0%,#062740 42%,#051f33 100%)!important;
+  overflow:hidden;
+}
+.login-panel:before{
+  content:"";
+  position:absolute;
+  inset:0;
+  z-index:-2;
+  opacity:.32;
+  background:
+    linear-gradient(90deg,transparent 0 48%,rgba(255,255,255,.035) 49% 50%,transparent 51%),
+    linear-gradient(0deg,transparent 0 48%,rgba(255,255,255,.025) 49% 50%,transparent 51%);
+  background-size:80px 80px;
+  mask-image:linear-gradient(to bottom,rgba(0,0,0,.7),transparent 72%);
+}
+.login-panel:after{
+  content:"";
+  position:absolute;
+  z-index:-1;
+  width:260px;
+  height:260px;
+  right:-28px;
+  top:95px;
+  opacity:.16;
+  background:url('/scanner-hero.svg') center/contain no-repeat;
+  filter:drop-shadow(0 22px 42px #00121d80);
+}
+.login-card{background:transparent!important;border:0!important;box-shadow:none!important;padding:20px 22px 24px!important;width:min(465px,100%)!important}
+.login-brand{position:relative;display:block!important;border:0!important;padding:0!important;min-height:92px}
+.login-brand img{display:none!important}
+.login-brand:before{content:"";display:block;width:290px;max-width:86%;height:88px;background:url('/scancontrol-brand-dark.svg') left center/contain no-repeat}
+.login-brand>div{display:none!important}
+.login-copy{margin-top:18px!important;color:#fff}
+.login-copy .login-badge{margin-bottom:8px;background:#ffffff0d!important;color:#f6f9fb!important;border:1px solid #ffffff20!important;backdrop-filter:blur(8px)}
+.login-copy .login-badge svg{color:var(--sc-lime)}
+.login-copy h1{margin:6px 0 6px!important;color:#fff!important;font-size:clamp(34px,5vw,48px)!important;letter-spacing:-.045em!important;font-weight:650!important}
+.login-copy h1:after{content:"";display:block;width:32px;height:4px;margin-top:12px;border-radius:99px;background:var(--sc-lime)}
+.login-copy p{color:#d6e2e7!important;font-size:12px!important;max-width:360px}
+.login-form{margin-top:24px!important;padding:18px!important;gap:12px!important;border-radius:22px;background:#fbfcfd!important;border:1px solid #ffffff80;box-shadow:0 24px 70px #00121d70}
+.login-form label{gap:6px!important}
+.login-form label>span{color:#415767!important;font-size:10px!important;font-weight:700!important}
+.login-form label>span svg{color:#25485e!important}
+.login-form input{height:50px!important;border-radius:12px!important;border:1px solid #d8e1e5!important;background:#fff!important;color:#102a3a!important;box-shadow:inset 0 1px 0 #fff}
+.login-form input:focus{border-color:#2d718d!important;box-shadow:0 0 0 3px #0e749014!important}
+.login-submit{height:51px!important;margin-top:4px!important;border-radius:13px!important;background:linear-gradient(115deg,#0a3b5b,#0b607d 62%,#0b8797)!important;box-shadow:0 12px 25px #073b5c35!important}
+.login-admin-note{margin-top:18px!important;padding:14px 16px!important;border:1px solid #ffffff18!important;border-radius:16px!important;background:linear-gradient(135deg,#ffffff0c,#ffffff05)!important;color:#fff!important;backdrop-filter:blur(10px)}
+.login-admin-note svg{color:var(--sc-lime)!important}
+.login-admin-note strong{color:#fff!important}
+.login-admin-note span{color:#bfcfd6!important}
+
+/* INTERIOR — mostly light, with restrained blue sections */
+.app-shell{background:var(--sc-canvas)!important}
+.sidebar{background:linear-gradient(180deg,#082f49 0%,#07293f 100%)!important;box-shadow:8px 0 28px #082f4912!important}
+.brand-logo{background:transparent!important;box-shadow:none!important;padding:0!important;filter:none!important;width:205px!important;height:auto!important}
+.product-name{border-color:#ffffff18!important}.product-name span{color:#d7e53d!important}.product-name small{color:#ffffff8f!important}
+.nav-item{border-radius:11px!important;color:#d4e0e6!important}
+.nav-item-active{background:#ffffff10!important;box-shadow:inset 3px 0 var(--sc-lime)!important;color:#fff!important}
+.nav-item-active svg{color:var(--sc-lime)!important}
+.sidebar-store{background:#ffffff08!important;border-color:#ffffff16!important}.store-mark{background:#ffffff0c!important;color:#fff!important}
+.avatar{background:#fff!important;color:var(--sc-navy)!important;border:2px solid #ffffff80}
+
+.workspace{background:linear-gradient(180deg,#f9fbfc 0,#f4f8fa 100%)!important}
+.topbar{background:rgba(255,255,255,.92)!important;border-color:var(--sc-line)!important;box-shadow:0 8px 28px #123c5010!important}
+.topbar h1{color:var(--sc-navy)!important;font-weight:650!important}.eyebrow{color:#7c8d96!important}
+.page-content{position:relative}
+.page-content:before{content:"";position:absolute;left:34px;right:34px;top:14px;height:90px;z-index:0;border-radius:20px;background:linear-gradient(120deg,rgba(8,47,73,.065),rgba(14,116,144,.035),transparent 72%);pointer-events:none}
+.page-content>*{position:relative;z-index:1}
+
+.scan-panel,.result-panel,.data-card,.catalog-intro,.upload-card,.catalog-status,.safety-note,.users-intro,.users-card,.incident-panel{
+  border:1px solid var(--sc-line)!important;
+  background:#fff!important;
+  box-shadow:0 10px 32px rgba(16,42,58,.055)!important;
+  border-radius:18px!important;
+}
+.section-heading h2,.evaluation-toolbar h2,.catalog-intro h2,.users-intro h2{color:var(--sc-navy)!important;font-weight:650!important}
+.section-heading p,.evaluation-toolbar p,.catalog-intro p,.users-intro p{color:var(--sc-muted)!important}
+.status-badge{background:#eef5f7!important;color:#2b5c70!important;border-color:#d8e6eb!important}
+.status-dot{background:var(--sc-lime)!important;box-shadow:0 0 0 4px #c7d72f1f!important}
+.store-pill{background:var(--sc-blue-wash)!important;color:var(--sc-navy)!important;border:1px solid #e2edf1}
+
+/* Scanner keeps a premium dark camera area, everything around it stays light */
+.scanner-target{background:linear-gradient(145deg,#fff,#f4f9fb)!important;border:1px dashed #b8cbd3!important}
+.scanner-target:hover{background:#eff7fa!important;border-color:#6c9caf!important}
+.scanner-icon{border-radius:18px!important;background:#f0f6f8!important;color:var(--sc-navy)!important;box-shadow:none!important}
+.camera-stage{background:#061d2b!important;box-shadow:inset 0 0 0 1px #ffffff0a,0 14px 30px #082f4920!important}
+.camera-mode{background:#041b29d8!important;border-color:#ffffff20!important}.camera-mode svg{color:var(--sc-lime)!important}
+.scan-frame span{border-color:#d0df36!important}.scan-frame i{background:#d0df36!important;box-shadow:0 0 14px #d0df36!important}
+.manual-controls input{background:#fff!important;border-color:#cfdce1!important}.manual-controls button{background:var(--sc-navy)!important}
+
+.result-success{background:#f2f7df!important;color:#5a6910!important;border-color:#e1eab0!important}
+.product-icon{background:#f1f5f7!important;color:var(--sc-navy)!important;border-radius:14px!important}
+.result-product h2{color:var(--sc-navy)!important}
+.price-block{background:linear-gradient(135deg,#0a3a57,#0a506e)!important}.price-block strong{color:#d2e03a!important}
+.auto-note{background:#fff!important}
+
+/* Evaluation */
+.evaluation-toolbar{padding:18px 20px;border:1px solid #e1eaee;border-radius:18px;background:linear-gradient(120deg,#fff 20%,#eef6f9 100%);box-shadow:0 8px 24px #102a3a0a}
+.evaluation-camera{background:linear-gradient(135deg,#082f49,#0a4d68)!important;box-shadow:0 12px 28px #082f4920!important}
+.without-label-button{background:#fff!important;color:var(--sc-navy)!important;border:1px solid #cbd9de!important;box-shadow:none!important}.without-label-button svg{color:#738314!important}
+.incident-panel{background:linear-gradient(135deg,#fff,#f5f9fb)!important}
+.incident-copy>span{color:#78909a!important}.incident-copy strong{color:var(--sc-navy)!important}
+.summary-grid>div{background:#fff!important;border:1px solid #e0e9ed!important;box-shadow:none!important}
+.summary-grid>div:before{opacity:.7}
+
+/* Catalog */
+.catalog-intro{background:linear-gradient(120deg,#fff 25%,#edf6f9 100%)!important}
+.catalog-icon{background:#e9f3f6!important;color:var(--sc-navy)!important}
+.upload-card{background:linear-gradient(180deg,#fff,#f7fafb)!important}
+.upload-card:hover{border-color:#a9c5d0!important;background:#f3f9fb!important}
+.upload-icon-plain{color:var(--sc-navy)!important}
+.upload-progress{background:#e3ecef!important}.upload-progress span{background:linear-gradient(90deg,#0d6682,#c7d72f)!important}
+.catalog-status{overflow:hidden}.catalog-status:before{content:"";display:block;height:5px;background:linear-gradient(90deg,#0b5874,#2b7f98,#c7d72f)}
+
+/* Users */
+.users-intro{background:linear-gradient(120deg,#fff,#f0f7f9)!important}
+.user-summary>div{border-color:#e0e9ed!important;box-shadow:0 6px 20px #102a3a09!important}
+.user-summary strong,.managed-user strong{color:var(--sc-navy)!important}.managed-avatar{background:#eef5f7!important;color:var(--sc-navy)!important}
+.users-table th{background:#f4f8fa!important;color:#718691!important}.users-table td{border-color:#e6edf0!important}
+
+/* Controls and minimalist icon treatment */
+button[data-slot="button"]{box-shadow:none!important}
+button[data-slot="button"][data-variant="default"]{background:var(--sc-navy)!important}
+.toolbar-actions button:last-child{background:linear-gradient(135deg,#082f49,#0c6680)!important}
+svg{stroke-width:1.8}
+
+/* Softer mobile layout */
+@media(max-width:900px){
+  .login-screen{display:block!important;background:#051f33!important}
+  .login-side{display:none!important}
+  .login-panel{min-height:100svh!important;display:flex!important;align-items:flex-start!important;justify-content:center!important;padding:34px 16px 26px!important}
+  .login-panel:after{width:210px;height:210px;top:92px;right:-34px;opacity:.13}
+  .login-card{margin:0 auto!important;padding-top:8px!important}
+  .login-brand{min-height:84px}
+  .login-brand:before{width:265px;height:82px}
+  .login-copy{margin-top:12px!important;max-width:330px}
+  .login-copy h1{font-size:38px!important}
+  .login-form{margin-top:20px!important}
+}
+
+@media(max-width:760px){
+  .topbar{background:rgba(255,255,255,.96)!important;box-shadow:0 4px 16px #102a3a0b!important}
+  .mobile-menu{color:var(--sc-navy)!important}
+  .mobile-store-switcher{border-color:#d8e4e8!important;background:#fff!important}
+  .page-content{padding:18px 14px 34px!important}
+  .page-content:before{left:14px;right:14px;top:8px;height:76px;border-radius:16px}
+  .scan-panel,.result-panel,.data-card,.catalog-intro,.upload-card,.catalog-status,.safety-note,.users-intro,.users-card,.incident-panel{border-radius:16px!important;box-shadow:0 7px 22px #102a3a0a!important}
+  .evaluation-toolbar{border-radius:16px!important}
+  .evaluation-camera{border-radius:15px!important}
+  .sidebar{box-shadow:16px 0 42px #051b2970!important}
+}
+
+@media(max-width:520px){
+  .login-panel{padding:24px 14px 20px!important}
+  .login-card{padding:0 8px 16px!important}
+  .login-brand:before{width:245px;height:76px}
+  .login-copy h1{font-size:36px!important}
+  .login-copy p{font-size:11.5px!important}
+  .login-form{padding:16px!important;border-radius:20px!important}
+  .login-form input{height:49px!important}
+  .login-admin-note{padding:13px 14px!important}
+}
