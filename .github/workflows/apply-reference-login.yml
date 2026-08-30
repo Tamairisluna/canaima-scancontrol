@@ -1,0 +1,27 @@
+name: Apply approved login reference
+on:
+  push:
+    paths:
+      - '.github/workflows/apply-reference-login.yml'
+permissions:
+  contents: write
+jobs:
+  apply-login:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply login replica
+        run: python3 .github/scripts/apply_reference_login.py
+      - name: Commit changes
+        run: |
+          if git diff --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git config user.name "Tamairisluna"
+          git config user.email "tamairislunadiaz893@gmail.com"
+          git add app/page.tsx
+          git commit -m "Replica el inicio aprobado en el programa"
+          git push
