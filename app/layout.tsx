@@ -1,36 +1,26 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import "./visual-refresh.css";
-import "./login-exact.css";
-import "./login-reference.css";
-import "./login-polish.css";
 
 export const metadata: Metadata = {
   title: "Canaima ScanControl",
   description: "Control multi-tienda de precios y evaluación de productos de Grupo Canaima.",
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
+  manifest: "/manifest.webmanifest",
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "ScanControl",
+  },
 };
 
-const hapticEnhancer = `
-(() => {
-  try {
-    if (typeof navigator === "undefined" || typeof navigator.vibrate !== "function") return;
-    const nativeVibrate = navigator.vibrate.bind(navigator);
-    Object.defineProperty(navigator, "vibrate", {
-      configurable: true,
-      value(pattern) {
-        if (typeof pattern === "number" && pattern > 0 && pattern <= 100) {
-          nativeVibrate(0);
-          return nativeVibrate(120);
-        }
-        return nativeVibrate(pattern);
-      },
-    });
-  } catch {
-    // Si el navegador no permite reforzar la vibración, conserva el comportamiento nativo.
-  }
-})();`;
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 1,
+  viewportFit: "cover",
+  themeColor: "#002c49",
+};
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="es"><body><script dangerouslySetInnerHTML={{ __html: hapticEnhancer }}/>{children}</body></html>;
+  return <html lang="es"><head><link rel="preconnect" href="https://wmewkfkriihwaxqpeecs.supabase.co" crossOrigin="anonymous"/><link rel="dns-prefetch" href="https://wmewkfkriihwaxqpeecs.supabase.co"/></head><body>{children}</body></html>;
 }

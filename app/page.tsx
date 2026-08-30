@@ -3,9 +3,7 @@
 import Image from "next/image";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BarcodeFormat, BrowserMultiFormatOneDReader, type IScannerControls } from "@zxing/browser";
-import { read } from "xlsx";
-import { AlignmentType, BorderStyle, Document, Packer, Paragraph, Table, TableCell, TableRow, TextRun, WidthType } from "docx";
-import { Barcode, Building2, Camera, CheckCircle2, ChevronRight, CircleDollarSign, ClipboardCheck, Download, Eye, EyeOff, FileSpreadsheet, Hand, KeyRound, LoaderCircle, LockKeyhole, LogIn, LogOut, Mail, Menu, PackageSearch, Plus, RefreshCw, ScanLine, ShieldCheck, Store, Tags, Upload, UserRound, UserPlus, Users, X } from "lucide-react";
+import { Barcode, Building2, Camera, CheckCircle2, Check, ChevronRight, CircleDollarSign, ClipboardCheck, Clock3, Download, Eye, EyeOff, FileSpreadsheet, Hand, KeyRound, LoaderCircle, LogIn, LogOut, Mail, PackageSearch, Plus, RefreshCw, ScanLine, ShieldCheck, Store, Tags, Upload, UserRound, UserPlus, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +13,6 @@ import { Toaster } from "@/components/ui/sonner";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { createProvisioningClient, supabase } from "@/app/lib/supabase";
-import { getImportErrorMessage, parseCatalogWorkbook } from "@/app/lib/catalog-import";
 import { normalizeBarcode } from "@/app/lib/barcode";
 import { OBSERVATIONS, summarizeEvaluation, type Observation } from "@/app/lib/evaluation";
 
@@ -34,6 +31,17 @@ type ScanFeedback = { code: string; storeName: string } | null;
 
 const ROLE_LABELS: Record<RoleCode, string> = { employee: "Empleado", manager: "Gerente", supervisor: "Supervisor" };
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function formatCatalogUpdatedAt(value: string | null | undefined) {
+  if (!value) return "Sin información";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Sin información";
+  const today = new Date();
+  const isToday = date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth() && date.getDate() === today.getDate();
+  const time = new Intl.DateTimeFormat("es-DO", { hour: "numeric", minute: "2-digit" }).format(date);
+  if (isToday) return `Hoy, ${time}`;
+  return new Intl.DateTimeFormat("es-DO", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
 const GARMENT_BARCODE_FORMATS = [
   BarcodeFormat.EAN_13,
   BarcodeFormat.EAN_8,
@@ -56,28 +64,38 @@ type ExtendedCameraConstraintSet = MediaTrackConstraintSet & {
   zoom?: number;
 };
 
-function cameraConstraints(exactEnvironment = true): MediaStreamConstraints {
+function cameraDeviceScore(device: MediaDeviceInfo, index: number) {
+  const label = device.label.toLowerCase();
+  let score = 0;
+  if (/back|rear|environment|traser/.test(label)) score += 100;
+  if (/main|principal|standard|1\s?[x×]/.test(label)) score += 45;
+  if (/front|user|selfie|frontal/.test(label)) score -= 220;
+  if (/ultra[\s-]?wide|ultra gran|0[.,]5\s?[x×]?/.test(label)) score -= 240;
+  if (/macro|telephoto|telefoto/.test(label)) score -= 90;
+  const camera2Index = label.match(/camera2\s+(\d+)/)?.[1];
+  if (camera2Index === "0") score += 55;
+  if (!label) score -= 20 + index;
+  return score;
+}
+
+function selectMainRearCamera(devices: MediaDeviceInfo[]) {
+  const candidates = devices.filter((device) => device.kind === "videoinput" && device.label);
+  if (!candidates.length) return undefined;
+  return candidates
+    .map((device, index) => ({ device, score: cameraDeviceScore(device, index) }))
+    .sort((left, right) => right.score - left.score)[0]?.device;
+}
+
+function cameraConstraints(deviceId?: string): MediaStreamConstraints {
   return {
     audio: false,
     video: {
-      facingMode: exactEnvironment ? { exact: "environment" } : { ideal: "environment" },
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
+      ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: "environment" } }),
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
       frameRate: { ideal: 30, min: 20 },
     },
   };
-}
-
-async function openMainRearCamera() {
-  try {
-    // Let the browser/OS choose its default rear camera. On multi-lens phones this is
-    // the same camera family the native camera app exposes as the normal 1× view.
-    return await navigator.mediaDevices.getUserMedia(cameraConstraints(true));
-  } catch (error) {
-    const recoverable = error instanceof DOMException && ["OverconstrainedError", "NotFoundError", "ConstraintNotSatisfiedError"].includes(error.name);
-    if (!recoverable) throw error;
-    return navigator.mediaDevices.getUserMedia(cameraConstraints(false));
-  }
 }
 
 async function optimizeCamera(stream: MediaStream) {
@@ -86,17 +104,10 @@ async function optimizeCamera(stream: MediaStream) {
   const capabilities = track.getCapabilities?.() as ExtendedCameraCapabilities | undefined;
   const advanced: ExtendedCameraConstraintSet = {};
   if (capabilities?.focusMode?.includes("continuous")) advanced.focusMode = "continuous";
-  // Keep the phone at its true 1× view. If the browser exposes a logical multi-lens
-  // rear camera (for example 0.5×–10×), asking for zoom 1 selects the normal lens.
   if (capabilities?.zoom && capabilities.zoom.min <= 1 && capabilities.zoom.max >= 1) advanced.zoom = 1;
-  try {
-    await track.applyConstraints({
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-      frameRate: { ideal: 30 },
-      ...(Object.keys(advanced).length ? { advanced: [advanced] } : {}),
-    });
-  } catch { /* Conserva el autofocus y la resolución que entregue el dispositivo. */ }
+  if (Object.keys(advanced).length) {
+    try { await track.applyConstraints({ advanced: [advanced] }); } catch { /* El enfoque automático del dispositivo sigue disponible. */ }
+  }
   return { focus: Boolean(advanced.focusMode), zoom: advanced.zoom === 1 };
 }
 
@@ -104,32 +115,27 @@ function NavItem({ icon: Icon, label, active, onClick }: { icon: typeof ScanLine
   return <button className={`nav-item ${active ? "nav-item-active" : ""}`} onClick={onClick} type="button"><Icon size={20}/><span>{label}</span><ChevronRight className="nav-chevron" size={16}/></button>;
 }
 
+function ExcelDocumentIcon({ size = "large" }: { size?: "large" | "small" }) {
+  return <span className={`excel-document-icon excel-document-icon-${size}`} aria-hidden="true"><span className="excel-document-page"><span className="excel-document-fold"/><span className="excel-document-grid"/></span><span className="excel-document-badge">X</span></span>;
+}
+
 function LoginScreen() {
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(()=>typeof window === "undefined" ? "" : (window.localStorage.getItem("canaima-login-email") ?? ""));
   const [password, setPassword] = useState("");
-  const [busy, setBusy] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [remember, setRemember] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
   const [formMessage, setFormMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
-
-  useEffect(()=>{
-    try {
-      const saved = window.localStorage.getItem("scancontrol-login-email");
-      if (saved) setEmail(saved);
-    } catch {}
-  }, []);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
     setFormMessage(null);
     try {
-      const normalizedEmail = email.trim();
-      try {
-        if (remember) window.localStorage.setItem("scancontrol-login-email", normalizedEmail);
-        else window.localStorage.removeItem("scancontrol-login-email");
-      } catch {}
-      const { data, error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
+      if (remember) window.localStorage.setItem("canaima-login-email", email.trim());
+      else window.localStorage.removeItem("canaima-login-email");
+      const { data, error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
       if (error) {
         const text = error.code === "email_not_confirmed"
           ? "Debes confirmar primero el enlace enviado a tu correo."
@@ -154,56 +160,57 @@ function LoginScreen() {
     }
   }
 
-  async function recoverPassword() {
-    const normalizedEmail = email.trim();
-    if (!normalizedEmail) {
-      setFormMessage({ kind: "error", text: "Escribe tu correo electrónico para enviarte el enlace de recuperación." });
+  async function resetPassword() {
+    if (!email.trim()) {
+      setFormMessage({ kind: "error", text: "Escribe tu correo electrónico para recuperar la contraseña." });
       return;
     }
-    const { error } = await supabase.auth.resetPasswordForEmail(normalizedEmail, { redirectTo: window.location.origin });
-    if (error) {
-      const text = "No se pudo enviar el correo de recuperación. Intenta nuevamente.";
-      setFormMessage({ kind: "error", text });
-      toast.error("No se pudo enviar el enlace", { description: text });
-      return;
-    }
-    const text = "Revisa tu correo. Te enviamos un enlace para restablecer tu contraseña.";
-    setFormMessage({ kind: "success", text });
-    toast.success("Enlace de recuperación enviado");
+    setResetBusy(true);
+    setFormMessage(null);
+    const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+    if (error) setFormMessage({ kind: "error", text: "No se pudo enviar el enlace. Verifica el correo e intenta otra vez." });
+    else setFormMessage({ kind: "success", text: "Te enviamos un enlace para restablecer tu contraseña." });
+    setResetBusy(false);
   }
 
-  return <main className="login-screen login-reference"><Toaster position="top-center" richColors/>
-    <section className="login-reference-shell">
-      <div className="login-reference-brand"><Image src="/login-logo-reference.svg" alt="Grupo Canaima ScanControl" width={255} height={175} priority/></div>
-      <div className="login-reference-hero" aria-hidden="true"/>
-
-      <div className="login-reference-copy">
-        <h1>Bienvenido</h1>
-        <span className="login-reference-accent"/>
-        <div className="login-reference-secure"><strong>Acceso protegido</strong><ShieldCheck/></div>
-        <p>Ingresa con tus credenciales para continuar.</p>
+  return <main className="access-screen"><Toaster position="top-center" richColors/>
+    <section className="access-shell" aria-label="Acceso a Canaima ScanControl">
+      <div className="access-brand-lockup" aria-label="Grupo Canaima ScanControl">
+        <svg className="access-brand-mark" viewBox="0 0 64 70" role="img" aria-label="Canaima">
+          <path className="access-mark-frame" d="M32 2 61 19v33L32 69 3 52V19L32 2Zm0 8L10 23v25l22 13 22-13V23L32 10Z"/>
+          <path className="access-mark-c" d="m46 22-14-8-17 10v22l17 10 14-8V38l-14 8-9-5V29l9-5 14 8V22Z"/>
+        </svg>
+        <div><span>GRUPO CANAIMA</span><strong>SCAN<span>CONTROL</span></strong></div>
       </div>
 
-      <form onSubmit={submit} className="login-reference-form">
-        <label className="login-reference-field">
-          <span className="login-reference-field-icon"><Mail/></span>
-          <span className="login-reference-field-copy"><span className="login-reference-field-label">Correo electrónico</span><Input value={email} onChange={(event)=>setEmail(event.target.value)} required type="email" placeholder="ejemplo@empresa.com" autoComplete="email"/></span>
-        </label>
-        <label className="login-reference-field">
-          <span className="login-reference-field-icon"><LockKeyhole/></span>
-          <span className="login-reference-field-copy"><span className="login-reference-field-label">Contraseña</span><Input value={password} onChange={(event)=>setPassword(event.target.value)} required type={showPassword ? "text" : "password"} minLength={8} placeholder="Ingresa tu contraseña" autoComplete="current-password"/></span>
-          <button className="login-reference-eye" type="button" aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"} onClick={()=>setShowPassword((value)=>!value)}>{showPassword ? <EyeOff/> : <Eye/>}</button>
-        </label>
-        <div className="login-reference-options">
-          <label className="login-reference-remember"><input type="checkbox" checked={remember} onChange={(event)=>setRemember(event.target.checked)}/><span>Recordarme en este dispositivo</span></label>
-          <button className="login-reference-forgot" type="button" onClick={()=>void recoverPassword()}>¿Olvidaste tu contraseña?</button>
-        </div>
-        <Button className="login-reference-submit" type="submit" disabled={busy}>{busy ? <><LoaderCircle className="spin"/> Iniciando…</> : <><LogIn/> Iniciar sesión</>}</Button>
-        {formMessage && <p className={`auth-message auth-message-${formMessage.kind}`} role={formMessage.kind === "error" ? "alert" : "status"}>{formMessage.text}</p>}
+      <div className="access-hero-copy">
+        <h1>Bienvenido</h1>
+        <div className="access-accent" aria-hidden="true"/>
+        <div className="access-intro"><strong>Acceso protegido</strong><ShieldCheck size={20}/></div>
+        <p className="access-description">Ingresa con tus credenciales para continuar.</p>
+      </div>
+
+      <form onSubmit={submit} className="access-form-card">
+          <label className="access-field" htmlFor="login-email">
+            <span className="access-field-icon"><Mail size={22}/></span>
+            <span className="access-field-content"><strong>Correo electrónico</strong><Input id="login-email" value={email} onChange={(event)=>setEmail(event.target.value)} required type="email" inputMode="email" placeholder="ejemplo@empresa.com" autoComplete="email"/></span>
+          </label>
+          <label className="access-field" htmlFor="login-password">
+            <span className="access-field-icon"><KeyRound size={21}/></span>
+            <span className="access-field-content"><strong>Contraseña</strong><Input id="login-password" value={password} onChange={(event)=>setPassword(event.target.value)} required type={showPassword ? "text" : "password"} minLength={8} placeholder="Ingresa tu contraseña" autoComplete="current-password"/></span>
+            <button className="access-password-toggle" type="button" onClick={()=>setShowPassword((visible)=>!visible)} aria-label={showPassword ? "Ocultar contraseña" : "Mostrar contraseña"} aria-pressed={showPassword}>{showPassword ? <EyeOff size={20}/> : <Eye size={20}/>}</button>
+          </label>
+          <div className="access-form-options">
+            <label className="access-remember"><input type="checkbox" checked={remember} onChange={(event)=>setRemember(event.target.checked)}/><span><CheckCircle2 size={17}/> Recordarme en este dispositivo</span></label>
+            <button type="button" onClick={resetPassword} disabled={resetBusy}>{resetBusy ? "Enviando…" : "¿Olvidaste tu contraseña?"}</button>
+          </div>
+          <Button className="access-submit" type="submit" disabled={busy}>{busy?<><LoaderCircle className="spin" size={19}/> Iniciando…</>:<><LogIn size={20}/> Iniciar sesión</>}</Button>
+          {formMessage && <p className={`auth-message access-message auth-message-${formMessage.kind}`} role={formMessage.kind === "error" ? "alert" : "status"}>{formMessage.text}</p>}
       </form>
 
-      <div className="login-reference-protected"><span className="login-reference-shield"><ShieldCheck/></span><p><strong>Tus datos están protegidos</strong><span>Usamos cifrado y buenas prácticas<br/>de seguridad empresarial.</span></p></div>
-      <footer className="login-reference-footer"><div><Store/><span>GRUPO CANAIMA · OPERACIONES</span></div><small>Versión 2.0.0</small></footer>
+      <div className="access-security-note"><span><ShieldCheck size={24}/></span><p><strong>Tus datos están protegidos</strong><small>Usamos cifrado y buenas prácticas<br className="access-note-break"/> de seguridad empresarial.</small></p></div>
+
+      <footer className="access-footer"><div><Store size={17}/><span>GRUPO CANAIMA · OPERACIONES</span></div><small>Versión 2.0.0</small></footer>
     </section>
   </main>;
 }
@@ -256,6 +263,7 @@ export default function Home() {
 
   const hydrate = useCallback(async (userId: string) => {
     setBooting(true);
+    const storesRequest = Promise.resolve(supabase.from("stores").select("id,name,slug").eq("is_active", true).order("name"));
     const { data: ownerProfileData, error: ownerProfileError } = await supabase.from("profiles").select("id,full_name,role,store_id,is_active,is_owner").eq("id", userId).maybeSingle();
     let profileData=ownerProfileData as Profile|null;
     if(ownerProfileError){
@@ -266,7 +274,7 @@ export default function Home() {
     if(!profileData){setProfile(null);setBooting(false);return;}
     const nextProfile = profileData;
     setProfile(nextProfile);
-    const { data: storeData } = await supabase.from("stores").select("id,name,slug").eq("is_active", true).order("name");
+    const { data: storeData } = await storesRequest;
     const nextStores = (storeData ?? []) as StoreRecord[];
     setStores(nextStores);
     if (nextProfile.role === "supervisor") setStoreId((current)=>nextStores.some((item)=>item.id === current) ? current : (nextStores[0]?.id ?? ""));
@@ -486,27 +494,30 @@ export default function Home() {
       }
       if(!videoElement)throw new Error("No se pudo preparar la vista de la cámara");
 
-      let stream=await openMainRearCamera();
+      let devices=await navigator.mediaDevices.enumerateDevices();
+      let preferredCamera=selectMainRearCamera(devices);
+      let stream=await navigator.mediaDevices.getUserMedia(cameraConstraints(preferredCamera?.deviceId));
 
+      if(!preferredCamera){
+        devices=await navigator.mediaDevices.enumerateDevices();
+        preferredCamera=selectMainRearCamera(devices);
+        const currentDeviceId=stream.getVideoTracks()[0]?.getSettings().deviceId;
+        if(preferredCamera?.deviceId&&preferredCamera.deviceId!==currentDeviceId){
+          stream.getTracks().forEach((track)=>track.stop());
+          stream=await navigator.mediaDevices.getUserMedia(cameraConstraints(preferredCamera.deviceId));
+        }
+      }
 
       if(cameraSession!==cameraSessionRef.current){stream.getTracks().forEach((track)=>track.stop());return;}
       const optimization=await optimizeCamera(stream);
-      const reader=new BrowserMultiFormatOneDReader(undefined,{delayBetweenScanAttempts:20,delayBetweenScanSuccess:40});
+      const reader=new BrowserMultiFormatOneDReader(undefined,{delayBetweenScanAttempts:60,delayBetweenScanSuccess:120});
       reader.possibleFormats=GARMENT_BARCODE_FORMATS;
-      setCameraStatus(optimization.focus?"Cámara trasera principal 1× · enfoque continuo":"Cámara trasera principal 1× · autofocus del dispositivo");
+      setCameraStatus(optimization.focus?"Cámara principal 1× · enfoque continuo":"Cámara trasera principal 1×");
       controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
-        const now=Date.now();
-        if(!result){
-          // As soon as the previous barcode leaves the frame, let that same code be read again.
-          // Different barcodes are never blocked by this gate.
-          if(lastScanRef.current.code&&now-lastScanRef.current.at>450)lastScanRef.current={code:"",at:0};
-          return;
-        }
-        const scanned=normalizeBarcode(result.getText());
-        if(!scanned)return;
-        const sameCodeStillVisible=scanned===lastScanRef.current.code&&now-lastScanRef.current.at<900;
+        if(!result)return;
+        const scanned=normalizeBarcode(result.getText()),now=Date.now();
+        if(!scanned||(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<5000))return;
         lastScanRef.current={code:scanned,at:now};
-        if(sameCodeStillVisible)return;
         void registerCode(scanned,evaluation);
       });
     }
@@ -536,9 +547,13 @@ export default function Home() {
       if(file.size>20*1024*1024)throw new Error("El archivo supera el máximo permitido de 20 MB.");
       if(!/\.(xlsx|xls)$/i.test(fileName))throw new Error("Selecciona un archivo de Excel con extensión .XLSX o .XLS.");
       await new Promise<void>((resolve)=>requestAnimationFrame(()=>resolve()));
-      const fileBytes=await file.arrayBuffer();
+      const [fileBytes,excelModules]=await Promise.all([
+        file.arrayBuffer(),
+        Promise.all([import("xlsx"),import("@/app/lib/catalog-import")]),
+      ]);
       setUploading({stage:"parsing",fileName,done:0,total:0});
       await new Promise<void>((resolve)=>setTimeout(resolve,0));
+      const [{read},{parseCatalogWorkbook}]=excelModules;
       const workbook=read(fileBytes,{type:"array",cellDates:false});
       const parsed=parseCatalogWorkbook(workbook);
       const {products}=parsed;
@@ -560,6 +575,7 @@ export default function Home() {
       toast.success("Catálogo activado",{description:message});
     }catch(error){
       if(catalogId)await supabase.from("catalog_versions").update({status:"failed"}).eq("id",catalogId);
+      const {getImportErrorMessage}=await import("@/app/lib/catalog-import");
       const message=getImportErrorMessage(error);
       setUploadFeedback({kind:"error",title:"No se pudo cargar el Excel",message});
       toast.error("No se pudo cargar el catálogo",{description:message});
@@ -593,8 +609,8 @@ export default function Home() {
     supervisors:managedProfiles.filter((item)=>item.role==="supervisor").length,
     pending:managedProfiles.filter((item)=>!item.is_active||(item.role!=="supervisor"&&!item.store_id)).length,
   }),[managedProfiles]);
-  const viewTitle=view==="scanner"?"Verificar producto":view==="evaluation"?"Evaluación de productos":view==="catalog"?"Catálogo de tienda":"Usuarios y permisos";
   async function exportEvaluation(){
+    const {AlignmentType,BorderStyle,Document,Packer,Paragraph,Table,TableCell,TableRow,TextRun,WidthType}=await import("docx");
     const borders={top:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},bottom:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},left:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},right:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"}};const cell=(value:string,bold=false)=>new TableCell({borders,children:[new Paragraph({children:[new TextRun({text:value,bold})]})]});
     const doc=new Document({sections:[{children:[new Paragraph({alignment:AlignmentType.CENTER,children:[new TextRun({text:"GRUPO CANAIMA",bold:true,size:30,color:"073F5C"})]}),new Paragraph({alignment:AlignmentType.CENTER,children:[new TextRun({text:"INFORME DE EVALUACIÓN DE PRODUCTOS",bold:true,size:25})]}),new Paragraph(""),new Paragraph({children:[new TextRun({text:"Nombre de la empresa: ____________________________________",bold:true})]}),new Paragraph({children:[new TextRun({text:"Fecha: ____________________",bold:true})]}),new Paragraph(`Tienda evaluada: ${currentStore?.name??""}`),new Paragraph(""),new Paragraph("El presente documento contiene el resultado obtenido durante la evaluación realizada a los productos de la tienda indicada, conforme a las observaciones registradas durante el proceso de verificación."),new Paragraph(""),new Paragraph({children:[new TextRun({text:"Resumen de observaciones",bold:true,size:24,color:"073F5C"})]}),new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:[new TableRow({children:[cell("Observación",true),cell("Cantidad",true)]}),...summary.map((item)=>new TableRow({children:[cell(item.observation),cell(String(item.count))]}))]}),new Paragraph(""),new Paragraph({children:[new TextRun({text:"Detalle de productos evaluados",bold:true,size:24,color:"073F5C"})]}),new Table({width:{size:100,type:WidthType.PERCENTAGE},rows:[new TableRow({children:[cell("Artículo",true),cell("Producto",true),cell("Monto",true),cell("Observación",true)]}),...evaluationItems.map((item)=>new TableRow({children:[cell(item.article),cell(item.description),cell(money.format(item.amount)),cell(item.observation)]}))]}),new Paragraph(""),new Paragraph(""),new Paragraph("________________________      ________________________      ________________________"),new Paragraph("Gerente de tienda 1                Gerente de tienda 2                Supervisor")]}]});
     const blob=await Packer.toBlob(doc),href=URL.createObjectURL(blob),anchor=document.createElement("a");anchor.href=href;anchor.download=`Evaluacion_${(currentStore?.name??"tienda").replace(/[^a-z0-9]+/gi,"_")}.docx`;anchor.click();setTimeout(()=>URL.revokeObjectURL(href),1000);toast.success("Informe editable generado");
@@ -607,8 +623,22 @@ export default function Home() {
   if(!profile||!profile.is_active||(!storeId&&profile.role!=="supervisor"))return <main className="pending-screen"><Toaster position="top-center" richColors/><section><div className="pending-icon"><UserRound size={34}/></div><h1>Cuenta pendiente de asignación</h1><p>El administrador debe asignar una tienda y un rol antes de que puedas utilizar ScanControl.</p><Button variant="outline" onClick={signOut}><LogOut size={17}/> Cerrar sesión</Button></section></main>;
 
   return <div className="app-shell"><Toaster position="top-center" richColors/>
+    {mobileMenu&&<button className="drawer-backdrop" type="button" aria-label="Cerrar menú" onClick={()=>setMobileMenu(false)}/>}
     <aside className={`sidebar ${mobileMenu?"sidebar-open":""}`}><div className="brand-block"><Image src="/canaima-logo-sidebar.svg" alt="Grupo Canaima" className="brand-logo" width={520} height={100}/><button className="mobile-close" onClick={()=>setMobileMenu(false)} aria-label="Cerrar menú"><X size={20}/></button></div><div className="product-name"><span>SCANCONTROL</span><small>Control inteligente de productos</small></div><nav className="nav-list"><NavItem icon={ScanLine} label="Escanear producto" active={view==="scanner"} onClick={()=>goTo("scanner")}/>{isEvaluator&&<NavItem icon={ClipboardCheck} label="Evaluación" active={view==="evaluation"} onClick={()=>goTo("evaluation")}/>}<NavItem icon={FileSpreadsheet} label="Catálogo Excel" active={view==="catalog"} onClick={()=>goTo("catalog")}/>{isOwner&&<NavItem icon={Users} label="Usuarios y permisos" active={view==="users"} onClick={()=>goTo("users")}/>}</nav><div className="sidebar-store"><div className="store-mark"><Building2 size={18}/></div><div><span>Tienda activa</span><strong>{currentStore?.name??"Seleccionar tienda"}</strong></div></div><button className="sidebar-user" type="button" onClick={signOut}><div className="avatar">{initials}</div><div><strong>{displayName}</strong><span>{roleLabel}</span></div><LogOut size={18}/></button></aside>
-    <main className="workspace"><header className="topbar"><button className="mobile-menu" onClick={()=>setMobileMenu(true)} aria-label="Abrir menú"><Menu size={22}/></button><div className="topbar-title"><p className="eyebrow">GRUPO CANAIMA · OPERACIONES</p><h1>{viewTitle}</h1></div><div className="topbar-controls">{profile.role==="supervisor"&&view!=="users"&&<><div className="desktop-store-switcher"><Select value={storeId} onValueChange={selectStore}><SelectTrigger className="store-select"><Store size={16}/><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((item)=><SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div><label className="mobile-store-switcher" aria-label="Seleccionar tienda"><Store size={18}/><select value={storeId} onChange={(event)=>selectStore(event.target.value)} aria-label="Seleccionar tienda">{stores.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label></>}<Badge className="role-badge"><ShieldCheck size={14}/>{roleLabel}</Badge></div></header>
+    <main className="workspace">
+      <header className="topbar">
+        <div className="topbar-brand" aria-label="Grupo Canaima ScanControl">
+          <Image src="/canaima-logo.svg" alt="Grupo Canaima" width={480} height={250}/>
+          <strong>ScanControl</strong>
+        </div>
+        <div className="topbar-controls">
+          {profile.role==="supervisor"&&view!=="users"?<>
+            <div className="desktop-store-switcher"><Select value={storeId} onValueChange={selectStore}><SelectTrigger className="store-select"><Store size={16}/><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((item)=><SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div>
+            <label className="mobile-store-switcher" aria-label="Seleccionar tienda"><Store size={18}/><select value={storeId} onChange={(event)=>selectStore(event.target.value)} aria-label="Seleccionar tienda">{stores.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+          </>:<div className="topbar-current-store"><Store size={17}/><span>{currentStore?.name??"Seleccionar tienda"}</span></div>}
+        </div>
+        <button className="profile-menu-button" onClick={()=>setMobileMenu(true)} type="button" aria-label={`Abrir menú de ${displayName}`}><span>{initials}</span><i/></button>
+      </header>
 
       {view==="scanner"&&<section className="page-content scanner-layout"><div className="scan-panel"><div className="section-heading"><div><Badge className="status-badge"><span className={`status-dot ${catalogLoading?"status-dot-loading":""}`}/> {catalogLoading?"Preparando catálogo…":`Lector instantáneo · ${cachedProductCount.toLocaleString("es-ES")} productos`}</Badge><h2>Escaneo continuo</h2><p>Apunta la cámara al código. El resultado aparecerá al instante y el lector seguirá activo.</p></div><div className="store-pill"><Store size={16}/><span>{currentStore?.name}</span></div></div>{cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline/><div className="camera-mode" aria-live="polite"><Camera size={14}/>{cameraStatus}</div><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Cámara principal 1× · EAN, UPC y Code 128</small></button>}<div className="manual-entry"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div></div>
         <div className={`result-panel ${lastProduct?"":scanFeedback?"result-missing":"result-empty"}`}>{lastProduct?<><div className="result-success"><CheckCircle2 size={20}/><span>Producto encontrado</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO / ARTÍCULO</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div><span>TAMAÑO</span><strong>{lastProduct.size}</strong></div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div></>:scanFeedback?<div className="missing-product"><div className="missing-head"><Barcode size={21}/><div><strong>Código leído correctamente</strong><span>El lector y la cámara están funcionando</span></div></div><div className="missing-code"><span>CÓDIGO CAPTURADO</span><strong>{scanFeedback.code}</strong></div><div className="missing-copy"><h3>Esta prenda no está en el Excel activo</h3><p>No es posible mostrar artículo, color, tamaño, estilo ni precio porque el archivo de <strong>{scanFeedback.storeName}</strong> no contiene este código.</p></div><div className="missing-note"><FileSpreadsheet size={20}/><span>Carga el inventario que incluya esta prenda o comprueba que corresponda a la tienda seleccionada.</span></div></div>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div></section>}
@@ -623,21 +653,28 @@ export default function Home() {
         </div>
         {cameraOpen&&<div className="evaluation-camera"><video ref={videoRef} muted playsInline/><div><strong>{cameraStatus}</strong><span>Los productos se agregan y guardan automáticamente.</span></div><Button variant="outline" onClick={stopCamera}>Detener</Button></div>}
         <div className="incident-panel">
-          <div className="incident-copy"><span>OBSERVACIÓN DEL ÚLTIMO ESCANEO</span>{latestScannedEvaluationItem?<p>Producto activo: <strong>{latestScannedEvaluationItem.article}</strong></p>:<p>Escanea un producto para poder marcar una incidencia.</p>}</div>
+          <div className="incident-copy"><span>ÚLTIMO PRODUCTO</span>{latestScannedEvaluationItem?<><h3>{latestScannedEvaluationItem.description} · {latestScannedEvaluationItem.article}</h3><strong className="incident-price">{money.format(latestScannedEvaluationItem.amount)}</strong><p>Observación del último escaneo</p></>:<p>Escanea un producto para poder marcar una incidencia.</p>}</div>
+          {latestScannedEvaluationItem&&<div className="incident-selector"><span>Observación</span><Select value={latestScannedEvaluationItem.observation} onValueChange={(value)=>void changeObservation(latestScannedEvaluationItem.rowId,value as Observation)}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></div>}
           <div className="incident-actions">
             <Button className={`incident-button ${latestScannedEvaluationItem?.observation==="PRECIO ERRÓNEO"?"is-active":""}`} variant="outline" disabled={!latestScannedEvaluationItem} aria-pressed={latestScannedEvaluationItem?.observation==="PRECIO ERRÓNEO"} onClick={()=>void markLatestScannedProduct("PRECIO ERRÓNEO")}><CircleDollarSign size={18}/> Precio erróneo</Button>
             <Button className={`incident-button ${latestScannedEvaluationItem?.observation==="MAL ETIQUETADO"?"is-active":""}`} variant="outline" disabled={!latestScannedEvaluationItem} aria-pressed={latestScannedEvaluationItem?.observation==="MAL ETIQUETADO"} onClick={()=>void markLatestScannedProduct("MAL ETIQUETADO")}><Tags size={18}/> Mal etiquetado</Button>
           </div>
         </div>
-        <div className="summary-grid">{summary.map((item)=><div key={item.observation}><span>{item.observation}</span><strong>{item.count}</strong></div>)}</div>
+        <div className="summary-grid"><div className="summary-total"><span>EVALUADOS</span><strong>{evaluationItems.length}</strong></div>{summary.map((item)=><div key={item.observation}><span>{item.observation}</span><strong>{item.count}</strong></div>)}</div>
         <div className="data-card"><div className="data-card-head"><div><strong>Productos evaluados</strong><span>{evaluationItems.length} registros guardados</span></div><Button variant="outline" onClick={exportEvaluation} disabled={!evaluationItems.length}><Download size={17}/> Descargar Word editable</Button></div><div className="evaluation-table-wrap"><table className="evaluation-table"><thead><tr><th>Código / artículo</th><th>Descripción</th><th>Detalles</th><th>Monto</th><th>Observación</th><th/></tr></thead><tbody>{evaluationItems.length?evaluationItems.map((item)=><tr key={item.rowId}><td><strong>{item.article}</strong><span>{item.scannedAt}</span></td><td>{item.description}</td><td>{item.color} · {item.size}</td><td><strong>{money.format(item.amount)}</strong></td><td><Select value={item.observation} onValueChange={(value)=>void changeObservation(item.rowId,value as Observation)}><SelectTrigger className="observation"><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></td><td><button className="delete-row" onClick={()=>void deleteEvaluationItem(item.rowId)} aria-label={`Eliminar ${item.article}`}><X size={16}/></button></td></tr>):<tr><td colSpan={6} className="empty-table">Aún no hay productos en esta evaluación.</td></tr>}</tbody></table></div></div>
       </section>}
 
-      {view==="catalog"&&<section className="page-content catalog-page"><div className="catalog-intro"><div className="catalog-icon"><FileSpreadsheet size={30}/></div><div><Badge variant="outline">Catálogo independiente</Badge><h2>Excel de {currentStore?.name}</h2><p>Este archivo solo modifica los productos y precios de la tienda activa. Las otras 15 tiendas permanecerán sin cambios.</p></div></div><div className="catalog-grid"><div className={`upload-card ${uploading?"uploading":""}`} aria-live="polite" aria-busy={Boolean(uploading)}><input ref={fileInputRef} type="file" disabled={Boolean(uploading)} accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event)=>{const file=event.currentTarget.files?.[0];event.currentTarget.value="";if(file)void importExcel(file);}}/>{uploading?<><LoaderCircle className="spin upload-icon-plain" size={36}/><strong>{uploadLabel}</strong><span className="upload-file-name">{uploading.fileName}</span><div className="upload-progress"><span style={{width:`${uploadPercent}%`}}/></div><small>No cierres esta pantalla hasta que aparezca la confirmación</small></>:<><div className="upload-icon"><Upload size={28}/></div><strong>Cargar o reemplazar Excel</strong><span>Elige el inventario de esta tienda; la carga comenzará automáticamente.</span><Button className="upload-select-button" type="button" onClick={()=>fileInputRef.current?.click()}><FileSpreadsheet size={17}/> Seleccionar Excel</Button><small>Formato .XLSX o .XLS · Máximo 20 MB</small></>}</div><div className="catalog-status"><div className="status-head"><span>CATÁLOGO ACTIVO</span><Badge className={catalogMeta?"active-catalog":"empty-catalog"}>{catalogMeta?"Actualizado":"Sin catálogo"}</Badge></div><FileSpreadsheet size={38}/><h3>{catalogMeta?.fileName??"No se ha cargado un archivo"}</h3><p>{(catalogMeta?.rowCount??0).toLocaleString("es-ES")} productos disponibles</p><div className="catalog-meta"><div><span>Tienda</span><strong>{currentStore?.name}</strong></div><div><span>Alcance</span><strong>Solo esta tienda</strong></div></div></div></div>{uploadFeedback&&<div className={`upload-feedback upload-feedback-${uploadFeedback.kind}`} role={uploadFeedback.kind==="error"?"alert":"status"}>{uploadFeedback.kind==="success"?<CheckCircle2 size={22}/>:<X size={22}/>}<div><strong>{uploadFeedback.title}</strong><p>{uploadFeedback.message}</p></div></div>}<div className="safety-note"><ShieldCheck size={22}/><div><strong>Importación segura por tienda</strong><p>El catálogo de una sucursal nunca modifica el de las demás. La versión anterior queda conservada.</p></div></div></section>}
+      {view==="catalog"&&<section className="page-content catalog-page"><div className="catalog-intro"><div className="catalog-icon"><FileSpreadsheet size={30}/></div><div><Badge variant="outline">Catálogo independiente</Badge><h2>Excel de {currentStore?.name}</h2><p>Este archivo solo modifica los productos y precios de la tienda activa. Las otras 15 tiendas permanecerán sin cambios.</p></div></div><div className="catalog-grid"><div className={`upload-card ${uploading?"uploading":""}`} aria-live="polite" aria-busy={Boolean(uploading)}><input ref={fileInputRef} type="file" disabled={Boolean(uploading)} accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event)=>{const file=event.currentTarget.files?.[0];event.currentTarget.value="";if(file)void importExcel(file);}}/>{uploading?<><div className="excel-uploading-icon"><ExcelDocumentIcon/><LoaderCircle className="spin" size={22}/></div><strong>{uploadLabel}</strong><span className="upload-file-name">{uploading.fileName}</span><div className="upload-progress-copy"><span>{uploadLabel}</span><strong>{uploadPercent}%</strong></div><div className="upload-progress"><span style={{width:`${uploadPercent}%`}}/></div><small>No cierres esta pantalla hasta que aparezca la confirmación</small></>:<><ExcelDocumentIcon/><strong>Cargar o reemplazar archivo</strong><span className="upload-format">Formato XLSX o XLS · Máximo 20 MB</span><Button className="upload-select-button" type="button" onClick={()=>fileInputRef.current?.click()}><Upload size={19}/> Seleccionar Excel</Button><small className="sr-only">Elige el inventario de esta tienda; la carga comenzará automáticamente.</small></>}</div><div className="catalog-status"><h2>Catálogo activo</h2><div className="catalog-file-row"><ExcelDocumentIcon size="small"/><div><h3>{catalogMeta?.fileName??"No se ha cargado un archivo"}</h3><Badge className={catalogMeta?"active-catalog":"empty-catalog"}>{catalogMeta?<><Check size={13}/> Actualizado</>:"Sin catálogo"}</Badge></div></div><div className="catalog-active-detail"><PackageSearch size={20}/><span>{(catalogMeta?.rowCount??0).toLocaleString("es-ES")} productos</span></div><div className="catalog-active-detail"><Clock3 size={20}/><span>Última actualización: {formatCatalogUpdatedAt(catalogMeta?.activatedAt)}</span></div><div className="catalog-meta" aria-hidden="true"><div><span>Tienda</span><strong>{currentStore?.name}</strong></div><div><span>Alcance</span><strong>Solo esta tienda</strong></div></div></div></div>{uploadFeedback&&<div className={`upload-feedback upload-feedback-${uploadFeedback.kind}`} role={uploadFeedback.kind==="error"?"alert":"status"}>{uploadFeedback.kind==="success"?<CheckCircle2 size={22}/>:<X size={22}/>}<div><strong>{uploadFeedback.title}</strong><p>{uploadFeedback.message}</p></div></div>}<div className="safety-note"><ShieldCheck size={22}/><div><strong>El catálogo de esta tienda no modifica las demás sucursales.</strong><p className="sr-only">Importación segura por tienda. El catálogo de una sucursal nunca modifica el de las demás. La versión anterior queda conservada.</p></div></div></section>}
 
       {view==="users"&&isOwner&&<section className="page-content users-page"><div className="users-intro"><div><Badge className="status-badge"><ShieldCheck size={14}/> Administración exclusiva</Badge><h2>Usuarios y permisos</h2><p>Solo Romer puede crear cuentas, asignar funciones, elegir tiendas y autorizar el acceso.</p></div><div className="users-actions"><Button variant="outline" onClick={()=>void loadManagedProfiles()} disabled={usersLoading||Boolean(savingUserId)}><RefreshCw className={usersLoading?"spin":""} size={16}/> Actualizar</Button><Button className="primary-action" onClick={()=>{setNewUser((current)=>({...current,storeId:current.storeId||stores[0]?.id||""}));setUserDialogOpen(true);}}><UserPlus size={17}/> Agregar usuario</Button></div></div><div className="user-summary"><div><span>EMPLEADOS</span><strong>{userStats.employees}</strong></div><div><span>GERENTES</span><strong>{userStats.managers}</strong></div><div><span>SUPERVISORES</span><strong>{userStats.supervisors}</strong></div><div><span>PENDIENTES</span><strong>{userStats.pending}</strong></div></div>{usersError?<div className="users-setup"><div className="pending-icon"><Users size={32}/></div><h3>Falta activar el control propietario</h3><p>{usersError} Ejecuta el nuevo SQL de “Control propietario” en Supabase y luego pulsa Actualizar.</p></div>:usersLoading?<div className="users-loading"><LoaderCircle className="spin" size={28}/><span>Cargando cuentas registradas…</span></div>:<div className="users-card"><div className="data-card-head"><div><strong>Cuentas registradas</strong><span>{managedProfiles.length} usuarios bajo el control de Romer</span></div><Badge variant="outline">Asignación por tienda</Badge></div><div className="users-table-wrap"><table className="users-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Tienda asignada</th><th>Acceso</th></tr></thead><tbody>{managedProfiles.length?managedProfiles.map((item)=><tr key={item.id}><td><div className="managed-user"><div className="managed-avatar">{(item.full_name||item.email||"U").split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("")}</div><div><strong>{item.full_name||"Nombre no indicado"}</strong><span>{item.email||`Cuenta ${item.id.slice(0,8)}`}</span>{item.is_owner&&<Badge className="self-badge">Propietario</Badge>}</div></div></td><td><Select value={item.role} disabled={item.is_owner||Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{role:value as RoleCode})}><SelectTrigger className="user-role-select"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></td><td>{item.role==="supervisor"?<div className="all-stores"><Store size={15}/> Todas las tiendas</div>:<Select value={item.store_id??undefined} disabled={Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{store_id:value})}><SelectTrigger className="user-store-select"><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select>}</td><td><div className="access-toggle"><Switch checked={item.is_active} disabled={item.is_owner||Boolean(savingUserId)} onCheckedChange={(checked)=>void updateManagedProfile(item.id,{is_active:checked})} aria-label={`Acceso de ${item.full_name||item.email||"usuario"}`}/><span className={item.is_active?"access-active":"access-inactive"}>{savingUserId===item.id?"Guardando…":item.is_active?"Activo":"Desactivado"}</span></div></td></tr>):<tr><td colSpan={4} className="empty-table">Aún no hay cuentas registradas.</td></tr>}</tbody></table></div></div>}
         <Dialog open={userDialogOpen} onOpenChange={(open)=>!creatingUser&&setUserDialogOpen(open)}><DialogContent className="user-dialog"><DialogHeader><div className="dialog-icon"><Plus size={21}/></div><DialogTitle>Agregar nuevo usuario</DialogTitle><DialogDescription>Romer define desde aquí quién puede entrar, su función y la tienda correspondiente.</DialogDescription></DialogHeader><form className="create-user-form" onSubmit={createManagedUser}><label>Nombre completo<Input value={newUser.fullName} onChange={(event)=>setNewUser({...newUser,fullName:event.target.value})} placeholder="Nombre y apellido" required/></label><label>Correo electrónico<Input value={newUser.email} onChange={(event)=>setNewUser({...newUser,email:event.target.value})} type="email" placeholder="empleado@empresa.com" required/></label><label>Contraseña temporal<Input value={newUser.password} onChange={(event)=>setNewUser({...newUser,password:event.target.value})} type="password" minLength={8} placeholder="Mínimo 8 caracteres" required/></label><div className="create-user-grid"><label>Función<Select value={newUser.role} onValueChange={(value)=>setNewUser({...newUser,role:value as RoleCode})}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></label>{newUser.role!=="supervisor"&&<label>Tienda<Select value={newUser.storeId} onValueChange={(value)=>setNewUser({...newUser,storeId:value})}><SelectTrigger><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select></label>}</div><div className="create-user-note"><Mail size={17}/><span>La persona recibirá un correo de confirmación antes de poder iniciar sesión.</span></div><DialogFooter><Button type="button" variant="outline" onClick={()=>setUserDialogOpen(false)} disabled={creatingUser}>Cancelar</Button><Button className="primary-action" type="submit" disabled={creatingUser}>{creatingUser?<><LoaderCircle className="spin" size={17}/> Creando…</>:<><UserPlus size={17}/> Crear usuario</>}</Button></DialogFooter></form></DialogContent></Dialog>
       </section>}
     </main>
+    <nav className="mobile-bottom-nav" aria-label="Navegación principal">
+      <button className={view==="scanner"?"is-active":""} aria-current={view==="scanner"?"page":undefined} onClick={()=>goTo("scanner")} type="button"><ScanLine size={21}/><span>Escanear</span></button>
+      {isEvaluator&&<button className={view==="evaluation"?"is-active":""} aria-current={view==="evaluation"?"page":undefined} onClick={()=>goTo("evaluation")} type="button"><ClipboardCheck size={21}/><span>Evaluación</span></button>}
+      <button className={view==="catalog"?"is-active":""} aria-current={view==="catalog"?"page":undefined} onClick={()=>goTo("catalog")} type="button"><FileSpreadsheet size={21}/><span>Catálogo</span></button>
+      {isOwner&&<button className={view==="users"?"is-active":""} aria-current={view==="users"?"page":undefined} onClick={()=>goTo("users")} type="button"><Users size={21}/><span>Usuarios</span></button>}
+    </nav>
   </div>;
 }

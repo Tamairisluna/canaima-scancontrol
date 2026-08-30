@@ -1,13 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 250" role="img" aria-labelledby="title">
-  <title id="title">Grupo Canaima ScanControl</title>
-  <g transform="translate(28 45)">
-    <path d="M78 0 137 34v68l-59 34-59-34V34z" fill="none" stroke="#082f49" stroke-width="16" stroke-linejoin="round"/>
-    <path d="M78 35 110 53v34l-32 18-32-18V53z" fill="#c7d72f"/>
-    <path d="M78 51 96 61 78 71 60 61z" fill="#082f49" opacity=".9"/>
+  <title id="title">Grupo Canaima</title>
+  <g fill="none" stroke="#073b5c" stroke-width="28">
+    <path d="M170 90A70 70 0 0 1 310 90"/>
+    <path d="M310 106A70 70 0 0 1 170 106"/>
   </g>
-  <g font-family="Inter,Segoe UI,Arial,sans-serif">
-    <text x="185" y="92" fill="#082f49" font-size="24" font-weight="700" letter-spacing="5">GRUPO CANAIMA</text>
-    <text x="184" y="146" fill="#082f49" font-size="42" font-weight="800">SCAN</text>
-    <text x="290" y="146" fill="#aab91f" font-size="42" font-weight="800">CONTROL</text>
-  </g>
+  <path d="M270 73A39 39 0 1 0 270 123" fill="none" stroke="#bfd532" stroke-width="18"/>
+  <text x="226" y="230" text-anchor="end" fill="#073b5c" font-family="Montserrat,Arial,Helvetica,sans-serif" font-size="30" font-weight="400" letter-spacing="2.5">GRUPO</text>
+  <circle cx="240" cy="221" r="5" fill="#bfd532"/>
+  <text x="254" y="230" fill="#073b5c" font-family="Montserrat,Arial,Helvetica,sans-serif" font-size="30" font-weight="400" letter-spacing="2.5">CANAIMA</text>
 </svg>

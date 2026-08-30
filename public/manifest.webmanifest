@@ -1,0 +1,10 @@
+{
+  "name": "Canaima ScanControl",
+  "short_name": "ScanControl",
+  "description": "Control de precios y evaluación de productos de Grupo Canaima.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#002c49",
+  "theme_color": "#002c49",
+  "orientation": "portrait"
+}
