@@ -190,3 +190,50 @@ test("keeps the selected Excel alive until the mobile import finishes", async ()
   assert.match(page, /const fileBytesPromise=file\.arrayBuffer\(\)/);
   assert.match(page, /onChange=\{handleExcelSelection\}/);
 });
+
+test("keeps public registration store-bound and always employee-controlled", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../SUPABASE_CAMBIOS_PRIORITARIOS.sql", import.meta.url), "utf8");
+
+  assert.match(page, /supabase\.rpc\("registration_stores"\)/);
+  assert.match(page, /options:\{data:\{full_name:fullName,store_id:signupForm\.storeId\}\}/);
+  assert.doesNotMatch(page, /options:\{data:\{full_name:fullName,store_id:signupForm\.storeId,role:/);
+  assert.match(migration, /jsonb_build_object\('role', 'employee'\)/);
+  assert.match(migration, /Debes seleccionar una tienda activa/);
+  assert.match(migration, /is_owner\s*=\s*false/);
+});
+
+test("reserves cross-store user administration and reporting for Romer", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../SUPABASE_CAMBIOS_PRIORITARIOS.sql", import.meta.url), "utf8");
+
+  assert.match(page, /const canViewAllDailyStores = isOwner/);
+  assert.match(page, /supabase\.rpc\("owner_update_user"/);
+  assert.doesNotMatch(page, /profile\?\.role === "supervisor" \? stores/);
+  assert.match(migration, /if not public\.current_user_is_owner\(\) then/);
+  assert.match(migration, /not coalesce\(requester\.is_owner, false\) and target_store is distinct from requester\.store_id/);
+  assert.match(migration, /p\.store_id = target_store and p\.role::text in \('manager', 'supervisor'\)/);
+});
+
+test("blocks every unrelated barcode until the exact minimum size is scanned", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const requiredMessage = "Debes escanear primero la talla mínima ${sizeGate.expectedSize} para continuar.";
+
+  assert.equal(page.split(requiredMessage).length - 1, 2);
+  assert.match(page, /if\(sizeGate&&!evaluation\).*return void toast\.warning/);
+  assert.match(page, /matchesExpectedMinimum\(product,sizeGate\.product,sizeGate\.expectedSize\)/);
+  assert.ok(page.indexOf("if(sizeGate&&!evaluation)") < page.indexOf("void logActivity(product)"));
+});
+
+test("retries transient Excel batches and removes every interrupted catalog", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../SUPABASE_CAMBIOS_PRIORITARIOS.sql", import.meta.url), "utf8");
+
+  assert.match(page, /const batchSize=150/);
+  assert.match(page, /for\(let attempt=0;attempt<3&&pending\.length;attempt\+=1\)/);
+  assert.match(page, /transientUploadError/);
+  assert.match(page, /supabase\.rpc\("discard_catalog"/);
+  assert.match(page, /Reintentar carga/);
+  assert.match(migration, /delete from public\.products where catalog_id = target_catalog/);
+  assert.match(migration, /if catalog_status = 'active' then/);
+});

@@ -26,7 +26,7 @@ type ManagedProfile = Profile & { email: string | null; created_at: string | nul
 type Product = { id: string | null; storeId: string; barcode: string; article: string; description: string; color: string; size: string; style: string; amount: number; brand: string; category: string };
 type EvaluationItem = Product & { rowId: string; observation: Observation; scannedAt: string };
 type CatalogMeta = { id: string; fileName: string; rowCount: number; activatedAt: string | null } | null;
-type UploadStage = "reading" | "parsing" | "preparing" | "uploading" | "activating" | "caching";
+type UploadStage = "selected" | "reading" | "parsing" | "preparing" | "uploading" | "activating" | "caching";
 type UploadState = { stage: UploadStage; fileName: string; done: number; total: number };
 type UploadFeedback = { kind: "success" | "error"; title: string; message: string } | null;
 type ScanFeedback = { code: string; storeName: string } | null;
@@ -78,6 +78,12 @@ function formatShortDate(value: string) {
   const [year, month, day] = value.split("-").map(Number);
   return new Intl.DateTimeFormat("es-VE", { day:"numeric", month:"short", timeZone:"UTC" }).format(new Date(Date.UTC(year, month - 1, day)));
 }
+
+const waitForRetry = (milliseconds:number) => new Promise<void>((resolve)=>setTimeout(resolve,milliseconds));
+const transientUploadError = (error:{message?:string;code?:string}|null|undefined) => {
+  const value=`${error?.code??""} ${error?.message??""}`.toLowerCase();
+  return /failed to fetch|network|timeout|timed out|connection|gateway|502|503|504|429/.test(value);
+};
 const GARMENT_BARCODE_FORMATS = [
   BarcodeFormat.EAN_13,
   BarcodeFormat.EAN_8,
@@ -196,6 +202,12 @@ function LoginScreen() {
   const [busy, setBusy] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
   const [formMessage, setFormMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
+  const [signupOpen, setSignupOpen] = useState(false);
+  const [signupBusy, setSignupBusy] = useState(false);
+  const [signupStoresLoading, setSignupStoresLoading] = useState(false);
+  const [signupStores, setSignupStores] = useState<StoreRecord[]>([]);
+  const [signupForm, setSignupForm] = useState({ fullName:"", email:"", password:"", storeId:"" });
+  const [signupMessage, setSignupMessage] = useState<{ kind:"error"|"success"; text:string }|null>(null);
 
   useEffect(() => {
     const theme = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
@@ -253,6 +265,48 @@ function LoginScreen() {
     setResetBusy(false);
   }
 
+  async function openSignup() {
+    setSignupOpen(true);
+    setSignupMessage(null);
+    if (signupStores.length) return;
+    setSignupStoresLoading(true);
+    const { data, error } = await supabase.rpc("registration_stores");
+    if (error) setSignupMessage({ kind:"error", text:"El registro por tienda todavía debe activarse en Supabase." });
+    else {
+      const availableStores=(data??[]) as StoreRecord[];
+      setSignupStores(availableStores);
+      setSignupForm((current)=>({...current,storeId:current.storeId||availableStores[0]?.id||""}));
+    }
+    setSignupStoresLoading(false);
+  }
+
+  async function submitSignup(event:FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const fullName=signupForm.fullName.trim(),signupEmail=signupForm.email.trim().toLowerCase();
+    if(!fullName||!signupEmail||signupForm.password.length<8||!signupForm.storeId){
+      setSignupMessage({kind:"error",text:"Completa todos los datos y selecciona obligatoriamente tu tienda."});
+      return;
+    }
+    setSignupBusy(true);
+    setSignupMessage(null);
+    const {data,error}=await supabase.auth.signUp({
+      email:signupEmail,
+      password:signupForm.password,
+      options:{data:{full_name:fullName,store_id:signupForm.storeId}},
+    });
+    if(error){
+      const text=error.code==="user_already_exists"?"Ya existe una cuenta con este correo.":"No se pudo crear la cuenta. Revisa los datos e inténtalo nuevamente.";
+      setSignupMessage({kind:"error",text});
+    }else if(data.session){
+      setSignupMessage({kind:"success",text:"Cuenta creada como Empleado. Cargando tu tienda…"});
+      setSignupOpen(false);
+    }else{
+      setSignupMessage({kind:"success",text:"Cuenta creada como Empleado. Confirma el enlace enviado a tu correo para iniciar sesión."});
+      setSignupForm({fullName:"",email:"",password:"",storeId:signupForm.storeId});
+    }
+    setSignupBusy(false);
+  }
+
   return <main className="access-screen"><Toaster position="top-center" richColors/>
     <section className="access-shell" aria-label="Acceso a Canaima ScanControl">
       <div className="access-brand-lockup" aria-label="Grupo Canaima ScanControl">
@@ -285,6 +339,7 @@ function LoginScreen() {
             <button type="button" onClick={resetPassword} disabled={resetBusy}>{resetBusy ? "Enviando…" : "¿Olvidaste tu contraseña?"}</button>
           </div>
           <Button className="access-submit" type="submit" disabled={busy}>{busy?<><LoaderCircle className="spin" size={19}/> Iniciando…</>:<><LogIn size={20}/> Iniciar sesión</>}</Button>
+          <button className="access-create-account" type="button" onClick={()=>void openSignup()}>¿Primera vez? Crear una cuenta</button>
           {formMessage && <p className={`auth-message access-message auth-message-${formMessage.kind}`} role={formMessage.kind === "error" ? "alert" : "status"}>{formMessage.text}</p>}
       </form>
 
@@ -292,6 +347,20 @@ function LoginScreen() {
 
       <footer className="access-footer"><div><Store size={17}/><span>GRUPO CANAIMA · OPERACIONES</span></div><small>Versión 2.0.0</small></footer>
     </section>
+    <Dialog open={signupOpen} onOpenChange={(open)=>!signupBusy&&setSignupOpen(open)}>
+      <DialogContent className="user-dialog signup-dialog">
+        <DialogHeader><div className="dialog-icon"><UserPlus size={21}/></div><DialogTitle>Crear cuenta</DialogTitle><DialogDescription>Regístrate como Empleado y selecciona la tienda donde trabajarás.</DialogDescription></DialogHeader>
+        <form className="create-user-form" onSubmit={submitSignup}>
+          <label>Nombre completo<Input value={signupForm.fullName} onChange={(event)=>setSignupForm({...signupForm,fullName:event.target.value})} placeholder="Nombre y apellido" autoComplete="name" required/></label>
+          <label>Correo electrónico<Input value={signupForm.email} onChange={(event)=>setSignupForm({...signupForm,email:event.target.value})} type="email" inputMode="email" placeholder="empleado@empresa.com" autoComplete="email" required/></label>
+          <label>Contraseña<Input value={signupForm.password} onChange={(event)=>setSignupForm({...signupForm,password:event.target.value})} type="password" minLength={8} placeholder="Mínimo 8 caracteres" autoComplete="new-password" required/></label>
+          <label>Tienda asignada<Select value={signupForm.storeId} disabled={signupStoresLoading||!signupStores.length} onValueChange={(value)=>setSignupForm({...signupForm,storeId:value})}><SelectTrigger><SelectValue placeholder={signupStoresLoading?"Cargando tiendas…":"Seleccionar tienda"}/></SelectTrigger><SelectContent>{signupStores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select></label>
+          <div className="create-user-note"><ShieldCheck size={17}/><span>La cuenta se creará automáticamente como Empleado y quedará limitada a esta tienda.</span></div>
+          {signupMessage&&<p className={`auth-message auth-message-${signupMessage.kind}`} role={signupMessage.kind==="error"?"alert":"status"}>{signupMessage.text}</p>}
+          <DialogFooter><Button type="button" variant="outline" onClick={()=>setSignupOpen(false)} disabled={signupBusy}>Cancelar</Button><Button className="primary-action" type="submit" disabled={signupBusy||signupStoresLoading||!signupStores.length}>{signupBusy?<><LoaderCircle className="spin" size={17}/> Creando…</>:<><UserPlus size={17}/> Crear cuenta</>}</Button></DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   </main>;
 }
 
@@ -311,6 +380,7 @@ export default function Home() {
   const [catalogMeta, setCatalogMeta] = useState<CatalogMeta>(null);
   const [uploading, setUploading] = useState<UploadState | null>(null);
   const [uploadFeedback, setUploadFeedback] = useState<UploadFeedback>(null);
+  const [retryUploadFile, setRetryUploadFile] = useState<File|null>(null);
   const [evaluationId, setEvaluationId] = useState<string | null>(null);
   const [evaluationItems, setEvaluationItems] = useState<EvaluationItem[]>([]);
   const [managedProfiles, setManagedProfiles] = useState<ManagedProfile[]>([]);
@@ -351,7 +421,7 @@ export default function Home() {
   const isEvaluator = profile?.role === "manager" || profile?.role === "supervisor";
   const isOwner = Boolean(profile?.is_owner);
   const canViewDaily = Boolean(isEvaluator || isOwner);
-  const canViewAllDailyStores = Boolean(isOwner || profile?.role === "supervisor");
+  const canViewAllDailyStores = isOwner;
   const dailyVisibleStores = useMemo(()=>canViewAllDailyStores ? stores : stores.filter((store)=>store.id === (profile?.store_id || storeId)),[canViewAllDailyStores,profile?.store_id,storeId,stores]);
   const roleLabel = isOwner ? "Administrador general" : profile ? ROLE_LABELS[profile.role] : "";
   const displayName = profile?.full_name || "Usuario";
@@ -373,9 +443,9 @@ export default function Home() {
     const { data: storeData } = await storesRequest;
     const nextStores = (storeData ?? []) as StoreRecord[];
     setStores(nextStores);
-    if (nextProfile.role === "supervisor") setStoreId((current)=>nextStores.some((item)=>item.id === current) ? current : (nextStores[0]?.id ?? ""));
+    if (nextProfile.is_owner) setStoreId((current)=>nextStores.some((item)=>item.id === current) ? current : (nextProfile.store_id??nextStores[0]?.id??""));
     else setStoreId(nextProfile.store_id ?? "");
-    setDailyStoreId(nextProfile.is_owner||nextProfile.role==="supervisor"?"all":(nextProfile.store_id??""));
+    setDailyStoreId(nextProfile.is_owner?"all":(nextProfile.store_id??""));
     setBooting(false);
   }, []);
 
@@ -548,14 +618,14 @@ export default function Home() {
     const target=managedProfiles.find((item)=>item.id===userId);
     if(!target)return;
     const nextRole=patch.role??target.role;
-    const nextStore=nextRole==="supervisor"?null:(patch.store_id!==undefined?patch.store_id:(target.store_id??stores[0]?.id??null));
+    const nextStore=patch.store_id!==undefined?patch.store_id:(target.store_id??stores[0]?.id??null);
     const nextActive=patch.is_active??target.is_active;
     if(target.is_owner&&(nextRole!=="supervisor"||!nextActive))return void toast.error("No puedes quitar el acceso del propietario");
-    if(nextRole!=="supervisor"&&!nextStore)return void toast.error("Selecciona una tienda para esta cuenta");
+    if(!nextStore)return void toast.error("Selecciona una tienda para esta cuenta");
     const previous=managedProfiles;
     setSavingUserId(userId);
     setManagedProfiles((items)=>items.map((item)=>item.id===userId?{...item,role:nextRole,store_id:nextStore,is_active:nextActive}:item));
-    const {error}=await supabase.from("profiles").update({role:nextRole,store_id:nextStore,is_active:nextActive}).eq("id",userId);
+    const {error}=await supabase.rpc("owner_update_user",{target_user:userId,target_role:nextRole,target_store:nextStore,target_active:nextActive});
     if(error){setManagedProfiles(previous);toast.error("No se pudo guardar el acceso",{description:error.message});}
     else toast.success("Acceso actualizado",{description:target.full_name||target.email||"Usuario"});
     setSavingUserId(null);
@@ -565,16 +635,16 @@ export default function Home() {
     event.preventDefault();
     if(!isOwner)return;
     const fullName=newUser.fullName.trim(),email=newUser.email.trim().toLowerCase();
-    const assignedStore=newUser.role==="supervisor"?null:(newUser.storeId||stores[0]?.id||null);
+    const assignedStore=newUser.storeId||stores[0]?.id||null;
     if(!fullName||!email||newUser.password.length<8)return void toast.error("Completa correctamente todos los datos");
-    if(newUser.role!=="supervisor"&&!assignedStore)return void toast.error("Selecciona una tienda");
+    if(!assignedStore)return void toast.error("Selecciona una tienda");
     setCreatingUser(true);
     try{
       const provisioningClient=createProvisioningClient();
-      const {data,error}=await provisioningClient.auth.signUp({email,password:newUser.password,options:{data:{full_name:fullName}}});
+      const {data,error}=await provisioningClient.auth.signUp({email,password:newUser.password,options:{data:{full_name:fullName,store_id:assignedStore}}});
       if(error)throw error;
       if(!data.user)throw new Error("No se recibió el identificador de la cuenta");
-      const {error:profileUpdateError}=await supabase.from("profiles").update({full_name:fullName,role:newUser.role,store_id:assignedStore,is_active:true}).eq("id",data.user.id);
+      const {error:profileUpdateError}=await supabase.rpc("owner_update_user",{target_user:data.user.id,target_role:newUser.role,target_store:assignedStore,target_active:true});
       if(profileUpdateError)throw profileUpdateError;
       setNewUser({fullName:"",email:"",password:"",role:"employee",storeId:""});
       setUserDialogOpen(false);
@@ -648,7 +718,7 @@ export default function Home() {
     if (!normalized) return;
     const product=await lookupProduct(normalized);
     if (!product) {
-      if(sizeGate&&!evaluation){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Debes escanear la talla ${sizeGate.expectedSize} del mismo artículo y color.`});}
+      if(sizeGate&&!evaluation){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Debes escanear primero la talla mínima ${sizeGate.expectedSize} para continuar.`});}
       const storeName=currentStore?.name??"esta tienda";
       setLastProduct(null);
       setScanFeedback({code:normalized,storeName});
@@ -658,7 +728,7 @@ export default function Home() {
     }
 
     if(sizeGate&&!evaluation){
-      if(!matchesExpectedMinimum(product,sizeGate.product,sizeGate.expectedSize)){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Busca la talla ${sizeGate.expectedSize} del mismo artículo y color, o indica que no está exhibida.`});}
+      if(!matchesExpectedMinimum(product,sizeGate.product,sizeGate.expectedSize)){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Debes escanear primero la talla mínima ${sizeGate.expectedSize} para continuar.`});}
       setSizeGate(null);setScanFeedback(null);setLastProduct(product);setManualCode("");toast.dismiss("size-gate");if(navigator.vibrate)navigator.vibrate(80);
       void logActivity(product);void logActivity(product,{eventType:"SIZE_RESOLVED",expectedSize:sizeGate.expectedSize});
       return void toast.success("Talla menor validada",{description:`${product.article} · talla ${product.size}`});
@@ -766,6 +836,7 @@ export default function Home() {
       input.value="";
       return;
     }
+    setRetryUploadFile(file);
     void importExcel(file).finally(()=>{
       if(fileInputRef.current===input)input.value="";
     });
@@ -779,10 +850,12 @@ export default function Home() {
     let catalogId:string|null=null;
     const fileName=file.name;
     setUploadFeedback(null);
-    setUploading({stage:"reading",fileName,done:0,total:0});
+    setUploading({stage:"selected",fileName,done:0,total:0});
     try{
       if(file.size>20*1024*1024)throw new Error("El archivo supera el máximo permitido de 20 MB.");
       if(!/\.(xlsx|xls)$/i.test(fileName))throw new Error("Selecciona un archivo de Excel con extensión .XLSX o .XLS.");
+      await new Promise<void>((resolve)=>requestAnimationFrame(()=>resolve()));
+      setUploading({stage:"reading",fileName,done:0,total:0});
       const fileBytesPromise=file.arrayBuffer();
       await new Promise<void>((resolve)=>requestAnimationFrame(()=>resolve()));
       const [fileBytes,excelModules]=await Promise.all([
@@ -798,20 +871,33 @@ export default function Home() {
       setUploading({stage:"preparing",fileName,done:0,total:products.length});
       const {data:version,error:versionError}=await supabase.from("catalog_versions").insert({store_id:targetStoreId,file_name:file.name,row_count:0,status:"uploading",uploaded_by:targetUserId}).select("id").single();
       if(versionError)throw versionError;catalogId=version.id;
-      const batchSize=400;
+      const batchSize=150;
       for(let start=0;start<products.length;start+=batchSize){
         const batch=products.slice(start,start+batchSize).map((product)=>({...product,catalog_id:catalogId,store_id:targetStoreId}));
-        let {error}=await supabase.from("products").insert(batch);
-        if(error&&/(brand|category)/i.test(error.message)){
-          const compatibleBatch=batch.map((product)=>{
-            const compatibleProduct={...product} as Partial<typeof product>;
-            delete compatibleProduct.brand;
-            delete compatibleProduct.category;
-            return compatibleProduct;
-          });
-          ({error}=await supabase.from("products").insert(compatibleBatch));
+        let pending=batch;
+        for(let attempt=0;attempt<3&&pending.length;attempt+=1){
+          let {error}=await supabase.from("products").insert(pending);
+          if(error&&/(brand|category)/i.test(error.message)){
+            const compatibleBatch=pending.map((product)=>{
+              const compatibleProduct={...product} as Partial<typeof product>;
+              delete compatibleProduct.brand;
+              delete compatibleProduct.category;
+              return compatibleProduct;
+            });
+            ({error}=await supabase.from("products").insert(compatibleBatch));
+          }
+          if(!error){pending=[];break;}
+          if(!transientUploadError(error)&&error.code!=="23505")throw error;
+
+          const {data:existing,error:verifyError}=await supabase.from("products").select("barcode").eq("catalog_id",catalogId).in("barcode",pending.map((product)=>product.barcode));
+          if(!verifyError){
+            const uploaded=new Set((existing??[]).map((row)=>normalizeBarcode(row.barcode)));
+            pending=pending.filter((product)=>!uploaded.has(product.barcode));
+            if(!pending.length)break;
+          }
+          if(attempt===2)throw error;
+          await waitForRetry(450*(attempt+1));
         }
-        if(error)throw error;
         setUploading({stage:"uploading",fileName,done:Math.min(start+batch.length,products.length),total:products.length});
       }
       const {error:readyError}=await supabase.from("catalog_versions").update({status:"ready",row_count:products.length}).eq("id",catalogId);if(readyError)throw readyError;
@@ -829,9 +915,14 @@ export default function Home() {
       if(parsed.unavailableRows)details.push(`${parsed.unavailableRows.toLocaleString("es-ES")} variantes sin existencia fueron excluidas del cálculo de talla menor.`);
       const message=details.join(" ");
       setUploadFeedback({kind:"success",title:"Excel cargado correctamente",message});
+      setRetryUploadFile(null);
       toast.success("Catálogo activado",{description:message});
     }catch(error){
-      if(catalogId)await supabase.from("catalog_versions").update({status:"failed"}).eq("id",catalogId);
+      if(catalogId){
+        const {error:discardError}=await supabase.rpc("discard_catalog",{target_catalog:catalogId});
+        if(discardError)await supabase.from("catalog_versions").update({status:"failed"}).eq("id",catalogId);
+      }
+      setRetryUploadFile(file);
       const {getImportErrorMessage}=await import("@/app/lib/catalog-import");
       const message=getImportErrorMessage(error);
       setUploadFeedback({kind:"error",title:"No se pudo cargar el Excel",message});
@@ -840,8 +931,8 @@ export default function Home() {
     finally{setUploading(null);}
   }
 
-  const uploadPercent=uploading?uploading.stage==="reading"?8:uploading.stage==="parsing"?18:uploading.stage==="preparing"?25:uploading.stage==="uploading"?25+Math.round((uploading.done/Math.max(uploading.total,1))*60):uploading.stage==="activating"?92:97:0;
-  const uploadLabel=uploading?uploading.stage==="reading"?"Leyendo el archivo…":uploading.stage==="parsing"?"Identificando columnas y productos…":uploading.stage==="preparing"?"Preparando el catálogo de la tienda…":uploading.stage==="uploading"?`Cargando ${uploading.done.toLocaleString("es-ES")} de ${uploading.total.toLocaleString("es-ES")}`:uploading.stage==="activating"?"Activando precios y productos…":"Preparando el escaneo instantáneo…":"";
+  const uploadPercent=uploading?uploading.stage==="selected"?3:uploading.stage==="reading"?8:uploading.stage==="parsing"?18:uploading.stage==="preparing"?25:uploading.stage==="uploading"?25+Math.round((uploading.done/Math.max(uploading.total,1))*60):uploading.stage==="activating"?92:97:0;
+  const uploadLabel=uploading?uploading.stage==="selected"?"Archivo seleccionado":uploading.stage==="reading"?"Leyendo el archivo…":uploading.stage==="parsing"?"Identificando columnas y productos…":uploading.stage==="preparing"?"Preparando el catálogo de la tienda…":uploading.stage==="uploading"?`Subiendo ${uploading.done.toLocaleString("es-ES")} de ${uploading.total.toLocaleString("es-ES")}`:uploading.stage==="activating"?"Activando precios y productos…":"Preparando el escaneo instantáneo…":"";
 
   async function addWithoutLabel(){
     const targetEvaluation=await ensureEvaluation();if(!targetEvaluation)return;
@@ -866,7 +957,7 @@ export default function Home() {
     employees:managedProfiles.filter((item)=>item.role==="employee").length,
     managers:managedProfiles.filter((item)=>item.role==="manager").length,
     supervisors:managedProfiles.filter((item)=>item.role==="supervisor").length,
-    pending:managedProfiles.filter((item)=>!item.is_active||(item.role!=="supervisor"&&!item.store_id)).length,
+    pending:managedProfiles.filter((item)=>!item.is_active||(!item.is_owner&&!item.store_id)).length,
   }),[managedProfiles]);
   const dailySummary=useMemo(()=>summarizeDailyActivity(dailyRows),[dailyRows]);
   const dailyIncidentRows=useMemo(()=>dailyRows.filter(isActivityIncident),[dailyRows]);
@@ -885,7 +976,7 @@ export default function Home() {
 
   if(booting)return <main className="loading-screen"><Image src="/canaima-logo.svg" alt="Grupo Canaima" width={480} height={250} priority/><LoaderCircle className="spin" size={26}/><span>Preparando ScanControl…</span></main>;
   if(!sessionUserId)return <LoginScreen/>;
-  if(!profile||!profile.is_active||(!storeId&&profile.role!=="supervisor"))return <main className="pending-screen"><Toaster position="top-center" richColors/><section><div className="pending-icon"><UserRound size={34}/></div><h1>Cuenta pendiente de asignación</h1><p>El administrador debe asignar una tienda y un rol antes de que puedas utilizar ScanControl.</p><Button variant="outline" onClick={signOut}><LogOut size={17}/> Cerrar sesión</Button></section></main>;
+  if(!profile||!profile.is_active||!storeId)return <main className="pending-screen"><Toaster position="top-center" richColors/><section><div className="pending-icon"><UserRound size={34}/></div><h1>Cuenta pendiente de asignación</h1><p>Romer debe asignar una tienda activa antes de que puedas utilizar ScanControl.</p><Button variant="outline" onClick={signOut}><LogOut size={17}/> Cerrar sesión</Button></section></main>;
 
   return <div className="app-shell"><Toaster position="top-center" richColors/>
     {mobileMenu&&<button className="drawer-backdrop" type="button" aria-label="Cerrar menú" onClick={()=>setMobileMenu(false)}/>}
@@ -902,7 +993,7 @@ export default function Home() {
           <strong>ScanControl</strong>
         </div>
         <div className="topbar-controls">
-          {profile.role==="supervisor"&&view!=="users"?<>
+          {isOwner&&view!=="users"?<>
             <div className="desktop-store-switcher"><Select value={storeId} onValueChange={selectStore}><SelectTrigger className="store-select"><Store size={16}/><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((item)=><SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div>
             <label className="mobile-store-switcher" aria-label="Seleccionar tienda" title={currentStore?.name}><Store size={18}/><span>{currentStore?.name??"Tienda"}</span><select value={storeId} onChange={(event)=>selectStore(event.target.value)} aria-label="Seleccionar tienda">{stores.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
           </>:<div className="topbar-current-store"><Store size={17}/><span>{currentStore?.name??"Seleccionar tienda"}</span></div>}
@@ -916,7 +1007,7 @@ export default function Home() {
           <div className={`size-validation-control ${validateSmallestSize?"is-active":""}`}><span><Ruler size={19}/></span><div><strong>Validar talla menor</strong><small>{validateSmallestSize?"Validación activa: el escáner comprobará la talla mínima.":"Comprueba la talla mínima del mismo artículo y color."}</small></div><div className="size-validation-toggle"><b>{validateSmallestSize?"ACTIVA":"INACTIVA"}</b><Switch className="size-validation-switch" checked={validateSmallestSize} disabled={Boolean(sizeGate)} onCheckedChange={setValidateSmallestSize} aria-label="Validar talla menor"/></div></div>
           {cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline onClick={()=>void refocusActiveCamera()} title="Toca la imagen para reenfocar"/><div className="camera-mode" aria-live="polite"><Camera size={14}/>{cameraStatus}</div><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Cámara principal 1× · EAN, UPC y Code 128</small></button>}
         </div>
-        <div className={`result-panel ${lastProduct?(sizeGate?"result-blocked":""):scanFeedback?"result-missing":"result-empty"}`}>{lastProduct?<><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className="result-success"><CheckCircle2 size={20}/><span>{sizeGate?"Producto identificado · falta validar talla":"Producto encontrado"}</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO DE BARRAS · {lastProduct.barcode}</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div className={sizeGate?"size-alert":""}><span>TALLA</span><strong>{lastProduct.size}</strong>{sizeGate&&<small>Esperada: {sizeGate.expectedSize}</small>}</div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div>{sizeGate?<div className="size-gate-card" role="alert"><TriangleAlert size={23}/><div><strong>Escáner pausado por validación de talla</strong><p>Escanea la talla <b>{sizeGate.expectedSize}</b> del mismo artículo y color.</p></div><Button onClick={()=>void registerSmallerSizeNotDisplayed()} variant="outline"><Ruler size={17}/> Talla menor no exhibida</Button></div>:<div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div>}</>:scanFeedback?<div className="missing-product"><div className="missing-head"><Barcode size={21}/><div><strong>Código leído correctamente</strong><span>El lector y la cámara están funcionando</span></div></div><div className="missing-code"><span>CÓDIGO CAPTURADO</span><strong>{scanFeedback.code}</strong></div><div className="missing-copy"><h3>Esta prenda no está en el Excel activo</h3><p>No es posible mostrar artículo, color, talla, estilo ni precio porque el archivo de <strong>{scanFeedback.storeName}</strong> no contiene este código.</p></div><div className="missing-note"><FileSpreadsheet size={20}/><span>Carga el inventario que incluya esta prenda o comprueba que corresponda a la tienda seleccionada.</span></div></div>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div>
+        <div className={`result-panel ${lastProduct?(sizeGate?"result-blocked":""):scanFeedback?"result-missing":"result-empty"}`}>{lastProduct?<><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className="result-success"><CheckCircle2 size={20}/><span>{sizeGate?"Producto identificado · falta validar talla":"Producto encontrado"}</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO DE BARRAS · {lastProduct.barcode}</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div className={sizeGate?"size-alert":""}><span>TALLA</span><strong>{lastProduct.size}</strong>{sizeGate&&<small>Esperada: {sizeGate.expectedSize}</small>}</div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div>{sizeGate?<div className="size-gate-card" role="alert"><TriangleAlert size={23}/><div><strong>Escáner pausado por validación de talla</strong><p>Debes escanear primero la talla mínima <b>{sizeGate.expectedSize}</b> para continuar.</p></div><Button onClick={()=>void registerSmallerSizeNotDisplayed()} variant="outline"><Ruler size={17}/> Talla menor no exhibida</Button></div>:<div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div>}</>:scanFeedback?<div className="missing-product"><div className="missing-head"><Barcode size={21}/><div><strong>Código leído correctamente</strong><span>El lector y la cámara están funcionando</span></div></div><div className="missing-code"><span>CÓDIGO CAPTURADO</span><strong>{scanFeedback.code}</strong></div><div className="missing-copy"><h3>Esta prenda no está en el Excel activo</h3><p>No es posible mostrar artículo, color, talla, estilo ni precio porque el archivo de <strong>{scanFeedback.storeName}</strong> no contiene este código.</p></div><div className="missing-note"><FileSpreadsheet size={20}/><span>Carga el inventario que incluya esta prenda o comprueba que corresponda a la tienda seleccionada.</span></div></div>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div>
         <div className="manual-entry scanner-manual"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div>
       </section>}
 
@@ -963,10 +1054,10 @@ export default function Home() {
         </>}
       </section>}
 
-      {view==="catalog"&&<section className="page-content catalog-page"><div className="catalog-intro"><div className="catalog-icon"><FileSpreadsheet size={30}/></div><div><Badge variant="outline">Catálogo independiente</Badge><h2>Excel de {currentStore?.name}</h2><p>Este archivo solo modifica los productos y precios de la tienda activa. Las otras 15 tiendas permanecerán sin cambios.</p></div></div><div className="catalog-grid"><div className={`upload-card ${uploading?"uploading":""}`} aria-live="polite" aria-busy={Boolean(uploading)}><input ref={fileInputRef} type="file" disabled={Boolean(uploading)} accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={handleExcelSelection}/>{uploading?<><div className="excel-uploading-icon"><ExcelDocumentIcon/><LoaderCircle className="spin" size={22}/></div><strong>{uploadLabel}</strong><span className="upload-file-name">{uploading.fileName}</span><div className="upload-progress-copy"><span>{uploadLabel}</span><strong>{uploadPercent}%</strong></div><div className="upload-progress"><span style={{width:`${uploadPercent}%`}}/></div><small>No cierres esta pantalla hasta que aparezca la confirmación</small></>:<><ExcelDocumentIcon/><strong>Cargar o reemplazar archivo</strong><span className="upload-format">Formato XLSX o XLS · Máximo 20 MB</span><Button className="upload-select-button" type="button" onClick={()=>fileInputRef.current?.click()}><Upload size={19}/> Seleccionar Excel</Button><small className="sr-only">Elige el inventario de esta tienda; la carga comenzará automáticamente.</small></>}</div><div className="catalog-status"><h2>Catálogo activo</h2><div className="catalog-file-row"><ExcelDocumentIcon size="small"/><div><h3>{catalogMeta?.fileName??"No se ha cargado un archivo"}</h3><Badge className={catalogMeta?"active-catalog":"empty-catalog"}>{catalogMeta?<><Check size={13}/> Actualizado</>:"Sin catálogo"}</Badge></div></div><div className="catalog-active-detail"><PackageSearch size={20}/><span>{(catalogMeta?.rowCount??0).toLocaleString("es-ES")} productos</span></div><div className="catalog-active-detail"><Clock3 size={20}/><span>Última actualización: {formatCatalogUpdatedAt(catalogMeta?.activatedAt)}</span></div><div className="catalog-meta" aria-hidden="true"><div><span>Tienda</span><strong>{currentStore?.name}</strong></div><div><span>Alcance</span><strong>Solo esta tienda</strong></div></div></div></div>{uploadFeedback&&<div className={`upload-feedback upload-feedback-${uploadFeedback.kind}`} role={uploadFeedback.kind==="error"?"alert":"status"}>{uploadFeedback.kind==="success"?<CheckCircle2 size={22}/>:<X size={22}/>}<div><strong>{uploadFeedback.title}</strong><p>{uploadFeedback.message}</p></div></div>}<div className="safety-note"><ShieldCheck size={22}/><div><strong>El catálogo de esta tienda no modifica las demás sucursales.</strong><p className="sr-only">Importación segura por tienda. El catálogo de una sucursal nunca modifica el de las demás. La versión anterior queda conservada.</p></div></div></section>}
+      {view==="catalog"&&<section className="page-content catalog-page"><div className="catalog-intro"><div className="catalog-icon"><FileSpreadsheet size={30}/></div><div><Badge variant="outline">Catálogo independiente</Badge><h2>Excel de {currentStore?.name}</h2><p>Este archivo solo modifica los productos y precios de la tienda activa. Las otras 15 tiendas permanecerán sin cambios.</p></div></div><div className="catalog-grid"><div className={`upload-card ${uploading?"uploading":""}`} aria-live="polite" aria-busy={Boolean(uploading)}><input ref={fileInputRef} type="file" disabled={Boolean(uploading)} accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={handleExcelSelection}/>{uploading?<><div className="excel-uploading-icon"><ExcelDocumentIcon/><LoaderCircle className="spin" size={22}/></div><strong>{uploadLabel}</strong><span className="upload-file-name">{uploading.fileName}</span><div className="upload-progress-copy"><span>{uploadLabel}</span><strong>{uploadPercent}%</strong></div><div className="upload-progress"><span style={{width:`${uploadPercent}%`}}/></div><small>No cierres esta pantalla hasta que aparezca la confirmación</small></>:<><ExcelDocumentIcon/><strong>Cargar o reemplazar archivo</strong><span className="upload-format">Formato XLSX o XLS · Máximo 20 MB</span><Button className="upload-select-button" type="button" onClick={()=>fileInputRef.current?.click()}><Upload size={19}/> Seleccionar Excel</Button><small className="sr-only">Elige el inventario de esta tienda; la carga comenzará automáticamente.</small></>}</div><div className="catalog-status"><h2>Catálogo activo</h2><div className="catalog-file-row"><ExcelDocumentIcon size="small"/><div><h3>{catalogMeta?.fileName??"No se ha cargado un archivo"}</h3><Badge className={catalogMeta?"active-catalog":"empty-catalog"}>{catalogMeta?<><Check size={13}/> Actualizado</>:"Sin catálogo"}</Badge></div></div><div className="catalog-active-detail"><PackageSearch size={20}/><span>{(catalogMeta?.rowCount??0).toLocaleString("es-ES")} productos</span></div><div className="catalog-active-detail"><Clock3 size={20}/><span>Última actualización: {formatCatalogUpdatedAt(catalogMeta?.activatedAt)}</span></div><div className="catalog-meta" aria-hidden="true"><div><span>Tienda</span><strong>{currentStore?.name}</strong></div><div><span>Alcance</span><strong>Solo esta tienda</strong></div></div></div></div>{uploadFeedback&&<div className={`upload-feedback upload-feedback-${uploadFeedback.kind}`} role={uploadFeedback.kind==="error"?"alert":"status"}>{uploadFeedback.kind==="success"?<CheckCircle2 size={22}/>:<X size={22}/>}<div><strong>{uploadFeedback.title}</strong><p>{uploadFeedback.message}</p>{uploadFeedback.kind==="error"&&retryUploadFile&&<Button className="upload-retry-button" type="button" variant="outline" disabled={Boolean(uploading)} onClick={()=>void importExcel(retryUploadFile)}><RefreshCw size={15}/> Reintentar carga</Button>}</div></div>}<div className="safety-note"><ShieldCheck size={22}/><div><strong>El catálogo de esta tienda no modifica las demás sucursales.</strong><p className="sr-only">Importación segura por tienda. El catálogo de una sucursal nunca modifica el de las demás. La versión anterior queda conservada.</p></div></div></section>}
 
-      {view==="users"&&isOwner&&<section className="page-content users-page"><div className="users-intro"><div><Badge className="status-badge"><ShieldCheck size={14}/> Administración exclusiva</Badge><h2>Usuarios y permisos</h2><p>Solo Romer puede crear cuentas, asignar funciones, elegir tiendas y autorizar el acceso.</p></div><div className="users-actions"><Button variant="outline" onClick={()=>void loadManagedProfiles()} disabled={usersLoading||Boolean(savingUserId)}><RefreshCw className={usersLoading?"spin":""} size={16}/> Actualizar</Button><Button className="primary-action" onClick={()=>{setNewUser((current)=>({...current,storeId:current.storeId||stores[0]?.id||""}));setUserDialogOpen(true);}}><UserPlus size={17}/> Agregar usuario</Button></div></div><div className="user-summary"><div><span className="user-summary-icon" aria-hidden="true"><Users size={20}/></span><span>EMPLEADOS</span><strong>{userStats.employees}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><Building2 size={20}/></span><span>GERENTES</span><strong>{userStats.managers}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><ShieldCheck size={20}/></span><span>SUPERVISORES</span><strong>{userStats.supervisors}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><Clock3 size={20}/></span><span>PENDIENTES</span><strong>{userStats.pending}</strong></div></div>{usersError?<div className="users-setup"><div className="pending-icon"><Users size={32}/></div><h3>Falta activar el control propietario</h3><p>{usersError} Ejecuta el nuevo SQL de “Control propietario” en Supabase y luego pulsa Actualizar.</p></div>:usersLoading?<div className="users-loading"><LoaderCircle className="spin" size={28}/><span>Cargando cuentas registradas…</span></div>:<div className="users-card"><div className="data-card-head"><div><strong>Cuentas registradas</strong><span>{managedProfiles.length} usuarios bajo el control de Romer</span></div><Badge variant="outline">Asignación por tienda</Badge></div><div className="users-table-wrap"><table className="users-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Tienda asignada</th><th>Acceso</th></tr></thead><tbody>{managedProfiles.length?managedProfiles.map((item)=><tr key={item.id}><td><div className="managed-user"><div className="managed-avatar">{(item.full_name||item.email||"U").split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("")}</div><div><strong>{item.full_name||"Nombre no indicado"}</strong><span>{item.email||`Cuenta ${item.id.slice(0,8)}`}</span>{item.is_owner&&<Badge className="self-badge">Propietario</Badge>}</div></div></td><td><Select value={item.role} disabled={item.is_owner||Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{role:value as RoleCode})}><SelectTrigger className="user-role-select"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></td><td>{item.role==="supervisor"?<div className="all-stores"><Store size={15}/> Todas las tiendas</div>:<Select value={item.store_id??undefined} disabled={Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{store_id:value})}><SelectTrigger className="user-store-select"><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select>}</td><td><div className="access-toggle"><Switch checked={item.is_active} disabled={item.is_owner||Boolean(savingUserId)} onCheckedChange={(checked)=>void updateManagedProfile(item.id,{is_active:checked})} aria-label={`Acceso de ${item.full_name||item.email||"usuario"}`}/><span className={item.is_active?"access-active":"access-inactive"}>{savingUserId===item.id?"Guardando…":item.is_active?"Activo":"Desactivado"}</span></div></td></tr>):<tr><td colSpan={4} className="empty-table">Aún no hay cuentas registradas.</td></tr>}</tbody></table></div></div>}
-        <Dialog open={userDialogOpen} onOpenChange={(open)=>!creatingUser&&setUserDialogOpen(open)}><DialogContent className="user-dialog"><DialogHeader><div className="dialog-icon"><Plus size={21}/></div><DialogTitle>Agregar nuevo usuario</DialogTitle><DialogDescription>Romer define desde aquí quién puede entrar, su función y la tienda correspondiente.</DialogDescription></DialogHeader><form className="create-user-form" onSubmit={createManagedUser}><label>Nombre completo<Input value={newUser.fullName} onChange={(event)=>setNewUser({...newUser,fullName:event.target.value})} placeholder="Nombre y apellido" required/></label><label>Correo electrónico<Input value={newUser.email} onChange={(event)=>setNewUser({...newUser,email:event.target.value})} type="email" placeholder="empleado@empresa.com" required/></label><label>Contraseña temporal<Input value={newUser.password} onChange={(event)=>setNewUser({...newUser,password:event.target.value})} type="password" minLength={8} placeholder="Mínimo 8 caracteres" required/></label><div className="create-user-grid"><label>Función<Select value={newUser.role} onValueChange={(value)=>setNewUser({...newUser,role:value as RoleCode})}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></label>{newUser.role!=="supervisor"&&<label>Tienda<Select value={newUser.storeId} onValueChange={(value)=>setNewUser({...newUser,storeId:value})}><SelectTrigger><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select></label>}</div><div className="create-user-note"><Mail size={17}/><span>La persona recibirá un correo de confirmación antes de poder iniciar sesión.</span></div><DialogFooter><Button type="button" variant="outline" onClick={()=>setUserDialogOpen(false)} disabled={creatingUser}>Cancelar</Button><Button className="primary-action" type="submit" disabled={creatingUser}>{creatingUser?<><LoaderCircle className="spin" size={17}/> Creando…</>:<><UserPlus size={17}/> Crear usuario</>}</Button></DialogFooter></form></DialogContent></Dialog>
+      {view==="users"&&isOwner&&<section className="page-content users-page"><div className="users-intro"><div><Badge className="status-badge"><ShieldCheck size={14}/> Administración exclusiva</Badge><h2>Usuarios y permisos</h2><p>Solo Romer puede asignar funciones, cambiar tiendas y autorizar el acceso.</p></div><div className="users-actions"><Button variant="outline" onClick={()=>void loadManagedProfiles()} disabled={usersLoading||Boolean(savingUserId)}><RefreshCw className={usersLoading?"spin":""} size={16}/> Actualizar</Button><Button className="primary-action" onClick={()=>{setNewUser((current)=>({...current,storeId:current.storeId||stores[0]?.id||""}));setUserDialogOpen(true);}}><UserPlus size={17}/> Agregar usuario</Button></div></div><div className="user-summary"><div><span className="user-summary-icon" aria-hidden="true"><Users size={20}/></span><span>EMPLEADOS</span><strong>{userStats.employees}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><Building2 size={20}/></span><span>GERENTES</span><strong>{userStats.managers}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><ShieldCheck size={20}/></span><span>SUPERVISORES</span><strong>{userStats.supervisors}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><Clock3 size={20}/></span><span>PENDIENTES</span><strong>{userStats.pending}</strong></div></div>{usersError?<div className="users-setup"><div className="pending-icon"><Users size={32}/></div><h3>Falta activar el control propietario</h3><p>{usersError} Ejecuta el nuevo SQL de “Control propietario” en Supabase y luego pulsa Actualizar.</p></div>:usersLoading?<div className="users-loading"><LoaderCircle className="spin" size={28}/><span>Cargando cuentas registradas…</span></div>:<div className="users-card"><div className="data-card-head"><div><strong>Cuentas registradas</strong><span>{managedProfiles.length} usuarios bajo el control de Romer</span></div><Badge variant="outline">Asignación por tienda</Badge></div><div className="users-table-wrap"><table className="users-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Tienda asignada</th><th>Acceso</th></tr></thead><tbody>{managedProfiles.length?managedProfiles.map((item)=><tr key={item.id}><td><div className="managed-user"><div className="managed-avatar">{(item.full_name||item.email||"U").split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("")}</div><div><strong>{item.full_name||"Nombre no indicado"}</strong><span>{item.email||`Cuenta ${item.id.slice(0,8)}`}</span>{item.is_owner&&<Badge className="self-badge">Propietario</Badge>}</div></div></td><td><Select value={item.role} disabled={item.is_owner||Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{role:value as RoleCode})}><SelectTrigger className="user-role-select"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></td><td>{item.is_owner?<div className="all-stores"><Store size={15}/> Control de todas</div>:<Select value={item.store_id??undefined} disabled={Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{store_id:value})}><SelectTrigger className="user-store-select"><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select>}</td><td><div className="access-toggle"><Switch checked={item.is_active} disabled={item.is_owner||Boolean(savingUserId)} onCheckedChange={(checked)=>void updateManagedProfile(item.id,{is_active:checked})} aria-label={`Acceso de ${item.full_name||item.email||"usuario"}`}/><span className={item.is_active?"access-active":"access-inactive"}>{savingUserId===item.id?"Guardando…":item.is_active?"Activo":"Desactivado"}</span></div></td></tr>):<tr><td colSpan={4} className="empty-table">Aún no hay cuentas registradas.</td></tr>}</tbody></table></div></div>}
+        <Dialog open={userDialogOpen} onOpenChange={(open)=>!creatingUser&&setUserDialogOpen(open)}><DialogContent className="user-dialog"><DialogHeader><div className="dialog-icon"><Plus size={21}/></div><DialogTitle>Agregar nuevo usuario</DialogTitle><DialogDescription>Romer define desde aquí quién puede entrar, su función y la tienda correspondiente.</DialogDescription></DialogHeader><form className="create-user-form" onSubmit={createManagedUser}><label>Nombre completo<Input value={newUser.fullName} onChange={(event)=>setNewUser({...newUser,fullName:event.target.value})} placeholder="Nombre y apellido" required/></label><label>Correo electrónico<Input value={newUser.email} onChange={(event)=>setNewUser({...newUser,email:event.target.value})} type="email" placeholder="empleado@empresa.com" required/></label><label>Contraseña temporal<Input value={newUser.password} onChange={(event)=>setNewUser({...newUser,password:event.target.value})} type="password" minLength={8} placeholder="Mínimo 8 caracteres" required/></label><div className="create-user-grid"><label>Función<Select value={newUser.role} onValueChange={(value)=>setNewUser({...newUser,role:value as RoleCode})}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></label><label>Tienda<Select value={newUser.storeId} onValueChange={(value)=>setNewUser({...newUser,storeId:value})}><SelectTrigger><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select></label></div><div className="create-user-note"><Mail size={17}/><span>La persona recibirá un correo de confirmación antes de poder iniciar sesión.</span></div><DialogFooter><Button type="button" variant="outline" onClick={()=>setUserDialogOpen(false)} disabled={creatingUser}>Cancelar</Button><Button className="primary-action" type="submit" disabled={creatingUser}>{creatingUser?<><LoaderCircle className="spin" size={17}/> Creando…</>:<><UserPlus size={17}/> Crear usuario</>}</Button></DialogFooter></form></DialogContent></Dialog>
       </section>}
     </main>
     <nav className="mobile-bottom-nav" aria-label="Navegación principal">

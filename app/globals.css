@@ -359,6 +359,12 @@ button[data-slot="button"][data-variant="outline"]:disabled{color:#87979e!import
   .create-user-note{padding:10px 11px}
 }
 
+.upload-retry-button{height:38px!important;margin-top:10px;gap:7px;background:#fff!important;color:#7c2d2d!important;border-color:#d9a9a9!important}
+
+.access-create-account{align-self:center;padding:2px 8px;border:0;background:transparent;color:#07506e;font-size:9px;font-weight:760;cursor:pointer}
+.access-create-account:hover{text-decoration:underline}
+.signup-dialog [data-slot="select-trigger"]{width:100%!important}
+
 /* Ajustes operativos 4.2 — tienda visible, validación clara y reportes resumidos. */
 .result-panel>.price-block{border-bottom:1px solid #dfe7ea;background:linear-gradient(135deg,#f5f9fd,#fff);text-align:left}
 .result-panel>.price-block strong{margin-top:2px;color:#073f5c}
