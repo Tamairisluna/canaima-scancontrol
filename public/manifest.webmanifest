@@ -4,7 +4,15 @@
   "description": "Control de precios y evaluación de productos de Grupo Canaima.",
   "start_url": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "background_color": "#002c49",
   "theme_color": "#002c49",
-  "orientation": "portrait"
+  "orientation": "portrait",
+  "scope": "/",
+  "lang": "es",
+  "icons": [
+    { "src": "/pwa-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/pwa-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/pwa-icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
 }

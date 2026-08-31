@@ -3,7 +3,7 @@
 import Image from "next/image";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BarcodeFormat, BrowserMultiFormatOneDReader, type IScannerControls } from "@zxing/browser";
-import { Barcode, Building2, Camera, CheckCircle2, Check, ChevronRight, CircleDollarSign, ClipboardCheck, Clock3, Download, Eye, EyeOff, FileSpreadsheet, Hand, KeyRound, LoaderCircle, LogIn, LogOut, Mail, PackageSearch, Plus, RefreshCw, ScanLine, ShieldCheck, Store, Tags, Upload, UserRound, UserPlus, Users, X } from "lucide-react";
+import { Barcode, Boxes, Building2, CalendarDays, Camera, CheckCircle2, Check, ChevronRight, CircleDollarSign, ClipboardCheck, Clock3, Download, Eye, EyeOff, FileSpreadsheet, Hand, KeyRound, LoaderCircle, LogIn, LogOut, Mail, PackageSearch, Plus, RefreshCw, Ruler, ScanLine, ShieldCheck, Store, Tags, TriangleAlert, Upload, UserRound, UserPlus, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -15,22 +15,43 @@ import { toast } from "sonner";
 import { createProvisioningClient, supabase } from "@/app/lib/supabase";
 import { normalizeBarcode } from "@/app/lib/barcode";
 import { OBSERVATIONS, summarizeEvaluation, type Observation } from "@/app/lib/evaluation";
+import { dateInputValue, summarizeDailyActivity, type DailyActivityRow } from "@/app/lib/daily-activity";
+import { findMinimumSize, matchesExpectedMinimum } from "@/app/lib/size-validation";
 
 type RoleCode = "employee" | "manager" | "supervisor";
-type View = "scanner" | "evaluation" | "catalog" | "users";
+type View = "scanner" | "evaluation" | "daily" | "catalog" | "users";
 type StoreRecord = { id: string; name: string; slug: string };
 type Profile = { id: string; full_name: string | null; role: RoleCode; store_id: string | null; is_active: boolean; is_owner: boolean };
 type ManagedProfile = Profile & { email: string | null; created_at: string | null };
-type Product = { id: string | null; storeId: string; barcode: string; article: string; description: string; color: string; size: string; style: string; amount: number };
+type Product = { id: string | null; storeId: string; barcode: string; article: string; description: string; color: string; size: string; style: string; amount: number; brand: string; category: string };
 type EvaluationItem = Product & { rowId: string; observation: Observation; scannedAt: string };
-type CatalogMeta = { fileName: string; rowCount: number; activatedAt: string | null } | null;
+type CatalogMeta = { id: string; fileName: string; rowCount: number; activatedAt: string | null } | null;
 type UploadStage = "reading" | "parsing" | "preparing" | "uploading" | "activating" | "caching";
 type UploadState = { stage: UploadStage; fileName: string; done: number; total: number };
 type UploadFeedback = { kind: "success" | "error"; title: string; message: string } | null;
 type ScanFeedback = { code: string; storeName: string } | null;
+type SizeGate = { product: Product; expectedSize: string } | null;
 
 const ROLE_LABELS: Record<RoleCode, string> = { employee: "Empleado", manager: "Gerente", supervisor: "Supervisor" };
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+type ProductRow = { id:string; store_id:string; barcode:string; article:string; description:string|null; color:string|null; size:string|null; style:string|null; amount:number|string; brand?:string|null; category?:string|null };
+
+function productFromRow(row: ProductRow): Product {
+  return {
+    id: row.id,
+    storeId: row.store_id,
+    barcode: row.barcode,
+    article: row.article,
+    description: row.description ?? "",
+    color: row.color || "No especificado",
+    size: row.size || "No especificado",
+    style: row.style || "No especificado",
+    amount: Number(row.amount),
+    brand: row.brand || "No especificado",
+    category: row.category || "No especificado",
+  };
+}
 
 function formatCatalogUpdatedAt(value: string | null | undefined) {
   if (!value) return "Sin información";
@@ -91,8 +112,8 @@ function cameraConstraints(deviceId?: string): MediaStreamConstraints {
     audio: false,
     video: {
       ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: "environment" } }),
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
       frameRate: { ideal: 30, min: 20 },
     },
   };
@@ -268,21 +289,30 @@ export default function Home() {
   const [newUser, setNewUser] = useState({ fullName:"", email:"", password:"", role:"employee" as RoleCode, storeId:"" });
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [cachedProductCount, setCachedProductCount] = useState(0);
+  const [validateSmallestSize, setValidateSmallestSize] = useState(false);
+  const [sizeGate, setSizeGate] = useState<SizeGate>(null);
+  const [dailyDate, setDailyDate] = useState(()=>dateInputValue());
+  const [dailyRows, setDailyRows] = useState<DailyActivityRow[]>([]);
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [dailyError, setDailyError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const controlsRef = useRef<IScannerControls | null>(null);
   const cameraSessionRef = useRef(0);
   const lastScanRef = useRef({ code: "", at: 0 });
-  const scanBusyRef = useRef(false);
+  const productLookupRef = useRef<Map<string, Promise<Product | null>>>(new Map());
+  const activitySetupWarningRef = useRef(false);
   const evaluationIdRef = useRef<string | null>(null);
   const evaluationCreatePromiseRef = useRef<Promise<string | null> | null>(null);
   const productCacheRef = useRef<Map<string,Product>>(new Map());
   const productCacheStoreRef = useRef("");
   const productCacheReadyRef = useRef(false);
+  const activeCatalogIdRef = useRef("");
 
   const currentStore = stores.find((item)=>item.id === storeId) ?? null;
   const isEvaluator = profile?.role === "manager" || profile?.role === "supervisor";
   const isOwner = Boolean(profile?.is_owner);
+  const canViewDaily = Boolean(isEvaluator || isOwner);
   const roleLabel = isOwner ? "Administrador general" : profile ? ROLE_LABELS[profile.role] : "";
   const displayName = profile?.full_name || "Usuario";
   const initials = displayName.split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("") || "GC";
@@ -332,8 +362,9 @@ export default function Home() {
   }, [hydrate]);
 
   const loadCatalogMeta = useCallback(async (targetStore: string) => {
-    const { data } = await supabase.from("catalog_versions").select("file_name,row_count,activated_at").eq("store_id", targetStore).eq("status", "active").order("activated_at", { ascending:false }).limit(1).maybeSingle();
-    setCatalogMeta(data ? { fileName:data.file_name, rowCount:data.row_count, activatedAt:data.activated_at } : null);
+    const { data } = await supabase.from("catalog_versions").select("id,file_name,row_count,activated_at").eq("store_id", targetStore).eq("status", "active").order("activated_at", { ascending:false }).limit(1).maybeSingle();
+    activeCatalogIdRef.current=data?.id??"";
+    setCatalogMeta(data ? { id:data.id, fileName:data.file_name, rowCount:data.row_count, activatedAt:data.activated_at } : null);
   }, []);
 
   const loadProductCache = useCallback(async (targetStore:string) => {
@@ -344,12 +375,26 @@ export default function Home() {
     setCatalogLoading(true);
     const nextCache=new Map<string,Product>();
     let loadedProducts=0;
+    let extendedColumns=true;
+    const {data:activeCatalog,error:catalogError}=await supabase.from("catalog_versions").select("id").eq("store_id",targetStore).eq("status","active").order("activated_at",{ascending:false}).limit(1).maybeSingle();
+    if(productCacheStoreRef.current!==targetStore)return;
+    if(catalogError){setCatalogLoading(false);return;}
+    activeCatalogIdRef.current=activeCatalog?.id??"";
+    if(!activeCatalog){productCacheReadyRef.current=true;setCatalogLoading(false);return;}
     const pageSize=1000;
     for(let start=0;;start+=pageSize){
-      const {data,error}=await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",targetStore).order("id",{ascending:true}).range(start,start+pageSize-1);
+      let data:ProductRow[]|null=null;
+      let error:{message:string}|null=null;
+      if(extendedColumns){
+        const primary=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount,brand,category").eq("catalog_id",activeCatalog.id).eq("store_id",targetStore).order("id",{ascending:true}).range(start,start+pageSize-1);
+        data=primary.data as ProductRow[]|null;error=primary.error;
+        if(error&&/(brand|category)/i.test(error.message)){extendedColumns=false;const fallback=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("catalog_id",activeCatalog.id).eq("store_id",targetStore).order("id",{ascending:true}).range(start,start+pageSize-1);data=fallback.data as ProductRow[]|null;error=fallback.error;}
+      }else{
+        const fallback=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("catalog_id",activeCatalog.id).eq("store_id",targetStore).order("id",{ascending:true}).range(start,start+pageSize-1);data=fallback.data as ProductRow[]|null;error=fallback.error;
+      }
       if(productCacheStoreRef.current!==targetStore)return;
       if(error){setCatalogLoading(false);return;}
-      for(const row of data??[]){const product:Product={id:row.id,storeId:row.store_id,barcode:row.barcode,article:row.article,description:row.description??"",color:row.color||"No especificado",size:row.size||"No especificado",style:row.style||"No especificado",amount:Number(row.amount)};const barcodeKey=normalizeBarcode(product.barcode);if(barcodeKey)nextCache.set(barcodeKey,product);loadedProducts+=1;}
+      for(const row of data??[]){const product=productFromRow(row as ProductRow);const barcodeKey=normalizeBarcode(product.barcode);if(barcodeKey)nextCache.set(barcodeKey,product);loadedProducts+=1;}
       if((data?.length??0)<pageSize)break;
     }
     if(productCacheStoreRef.current!==targetStore)return;
@@ -365,7 +410,7 @@ export default function Home() {
     if (!evaluation) { evaluationIdRef.current=null; setEvaluationId(null); setEvaluationItems([]); return; }
     evaluationIdRef.current=evaluation.id; setEvaluationId(evaluation.id);
     const { data: rows } = await supabase.from("evaluation_items").select("id,product_id,store_id,barcode,article,description,color,size,style,amount,observation,scanned_at").eq("evaluation_id", evaluation.id).order("scanned_at", { ascending:false });
-    setEvaluationItems((rows ?? []).map((row)=>({ id:row.product_id, storeId:row.store_id, barcode:row.barcode ?? "", article:row.article, description:row.description ?? "", color:row.color ?? "No especificado", size:row.size ?? "No especificado", style:row.style ?? "No especificado", amount:Number(row.amount), rowId:row.id, observation:row.observation as Observation, scannedAt:new Date(row.scanned_at).toLocaleTimeString("es", {hour:"numeric",minute:"2-digit"}) })));
+    setEvaluationItems((rows ?? []).map((row)=>({ id:row.product_id, storeId:row.store_id, barcode:row.barcode ?? "", article:row.article, description:row.description ?? "", color:row.color ?? "No especificado", size:row.size ?? "No especificado", style:row.style ?? "No especificado", amount:Number(row.amount), brand:"No especificado", category:"No especificado", rowId:row.id, observation:row.observation as Observation, scannedAt:new Date(row.scanned_at).toLocaleTimeString("es", {hour:"numeric",minute:"2-digit"}) })));
   }, []);
 
   const loadManagedProfiles = useCallback(async () => {
@@ -383,6 +428,23 @@ export default function Home() {
     setUsersLoading(false);
   }, []);
 
+  const loadDailyActivity = useCallback(async (targetDate:string,targetStore:string) => {
+    if(!targetStore)return;
+    setDailyLoading(true);
+    setDailyError(null);
+    const {data,error}=await supabase.rpc("daily_activity_rows",{target_date:targetDate,target_store:targetStore});
+    if(error){setDailyRows([]);setDailyError("El Registro diario debe activarse en Supabase con el SQL incluido en esta versión.");setDailyLoading(false);return;}
+    const rows=(data??[]) as Array<Record<string,unknown>>;
+    setDailyRows(rows.map((row)=>({
+      id:String(row.id),createdAt:String(row.activity_at),employeeId:String(row.employee_id),employeeName:String(row.employee_name??"Usuario"),
+      storeId:String(row.store_id),storeName:String(row.store_name??"Tienda"),source:row.source as "scanner"|"evaluation",eventType:row.event_type as DailyActivityRow["eventType"],
+      barcode:String(row.barcode??""),article:String(row.article??""),description:String(row.description??""),color:String(row.color??"No especificado"),
+      size:String(row.size??"No especificado"),expectedSize:String(row.expected_size??""),style:String(row.style??"No especificado"),amount:Number(row.amount??0),
+      brand:String(row.brand??"No especificado"),category:String(row.category??"No especificado"),observation:(row.observation as Observation|null)??null,
+    })));
+    setDailyLoading(false);
+  },[]);
+
   useEffect(()=>{
     if (!storeId || !sessionUserId) return;
     const task=window.setTimeout(()=>{
@@ -399,14 +461,23 @@ export default function Home() {
     return()=>window.clearTimeout(task);
   },[view,isOwner,loadManagedProfiles]);
 
+  useEffect(()=>{
+    if(view!=="daily"||!canViewDaily||!storeId)return;
+    const task=window.setTimeout(()=>void loadDailyActivity(dailyDate,storeId),0);
+    return()=>window.clearTimeout(task);
+  },[view,canViewDaily,dailyDate,storeId,loadDailyActivity]);
+
   function selectStore(nextStoreId:string){
     stopCamera();
     setLastProduct(null);
     setScanFeedback(null);
+    setSizeGate(null);
     setCatalogMeta(null);
     setCachedProductCount(0);
     productCacheReadyRef.current=false;
     productCacheRef.current=new Map();
+    activeCatalogIdRef.current="";
+    productLookupRef.current.clear();
     setEvaluationItems([]);
     evaluationIdRef.current=null;
     evaluationCreatePromiseRef.current=null;
@@ -466,27 +537,59 @@ export default function Home() {
     try{return await evaluationCreatePromiseRef.current;}finally{evaluationCreatePromiseRef.current=null;}
   }
 
+  async function logActivity(product:Product,options?:{source?:"scanner"|"evaluation";eventType?:DailyActivityRow["eventType"];evaluationItemId?:string;observation?:Observation|null;expectedSize?:string}){
+    if(!sessionUserId||!storeId)return;
+    const {error}=await supabase.from("scan_activity").insert({
+      user_id:sessionUserId,store_id:storeId,product_id:product.id?String(product.id):null,evaluation_item_id:options?.evaluationItemId??null,
+      source:options?.source??"scanner",event_type:options?.eventType??"SCAN",barcode:product.barcode,article:product.article,description:product.description,
+      color:product.color,size:product.size,expected_size:options?.expectedSize??"",style:product.style,amount:product.amount,brand:product.brand,category:product.category,
+      observation:options?.observation??null,
+    });
+    if(error&&!activitySetupWarningRef.current){activitySetupWarningRef.current=true;if(canViewDaily)toast.warning("Registro diario pendiente de activación",{description:"Ejecuta el SQL de esta versión en Supabase para conservar la actividad."});}
+  }
+
   async function saveEvaluationProduct(product: Product) {
     const targetEvaluation = await ensureEvaluation();
     if (!targetEvaluation) return;
     const { data, error } = await supabase.from("evaluation_items").insert({ evaluation_id:targetEvaluation, store_id:storeId, product_id:product.id, barcode:product.barcode || null, article:product.article, description:product.description, color:product.color, size:product.size, style:product.style, amount:product.amount, observation:"SIN INCIDENCIAS" }).select("id,scanned_at").single();
     if (error) return void toast.error("No se pudo guardar el producto evaluado");
     setEvaluationItems((items)=>[{...product,rowId:data.id,observation:"SIN INCIDENCIAS",scannedAt:new Date(data.scanned_at).toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})},...items]);
+    void logActivity(product,{source:"evaluation",evaluationItemId:data.id,observation:"SIN INCIDENCIAS"});
   }
+
+  const lookupProduct = useCallback(async (normalized:string) => {
+    const cached=productCacheStoreRef.current===storeId?productCacheRef.current.get(normalized):undefined;
+    if(cached)return cached;
+    const currentLookup=productLookupRef.current.get(normalized);
+    if(currentLookup)return currentLookup;
+    const request=(async()=>{
+      let catalogId=activeCatalogIdRef.current;
+      if(!catalogId){
+        const {data}=await supabase.from("catalog_versions").select("id").eq("store_id",storeId).eq("status","active").order("activated_at",{ascending:false}).limit(1).maybeSingle();
+        if(productCacheStoreRef.current!==storeId)return null;
+        catalogId=data?.id??"";
+        activeCatalogIdRef.current=catalogId;
+      }
+      if(!catalogId)return null;
+      const primary=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount,brand,category").eq("catalog_id",catalogId).eq("store_id",storeId).eq("barcode",normalized).limit(1).maybeSingle();
+      let data=primary.data as ProductRow|null;let error:{message:string}|null=primary.error;
+      if(error&&/(brand|category)/i.test(error.message)){const fallback=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("catalog_id",catalogId).eq("store_id",storeId).eq("barcode",normalized).limit(1).maybeSingle();data=fallback.data as ProductRow|null;error=fallback.error;}
+      if(error||!data||productCacheStoreRef.current!==storeId)return null;
+      const product=productFromRow(data as ProductRow);
+      productCacheRef.current.set(normalized,product);
+      return product;
+    })();
+    productLookupRef.current.set(normalized,request);
+    try{return await request;}finally{productLookupRef.current.delete(normalized);}
+  },[storeId]);
 
   const registerCode = useCallback(async (rawCode: string, evaluation=false) => {
     if (!storeId) return;
     const normalized=normalizeBarcode(rawCode);
     if (!normalized) return;
-    let product=productCacheStoreRef.current===storeId?productCacheRef.current.get(normalized):undefined;
-    if(!product){
-      if(scanBusyRef.current)return;
-      scanBusyRef.current=true;
-      const { data, error } = await supabase.from("active_products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("store_id",storeId).eq("barcode",normalized).limit(1).maybeSingle();
-      scanBusyRef.current=false;
-      if(!error&&data){product={id:data.id,storeId:data.store_id,barcode:data.barcode,article:data.article,description:data.description??"",color:data.color||"No especificado",size:data.size||"No especificado",style:data.style||"No especificado",amount:Number(data.amount)};productCacheRef.current.set(normalized,product);}
-    }
+    const product=await lookupProduct(normalized);
     if (!product) {
+      if(sizeGate&&!evaluation){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Debes escanear la talla ${sizeGate.expectedSize} del mismo artículo y color.`});}
       const storeName=currentStore?.name??"esta tienda";
       setLastProduct(null);
       setScanFeedback({code:normalized,storeName});
@@ -494,10 +597,29 @@ export default function Home() {
       if(navigator.vibrate)navigator.vibrate([70,60,70]);
       return void toast.warning("Código leído correctamente",{id:"scanner-result",description:`${normalized} no está incluido en el Excel activo de ${storeName}.`});
     }
-    setScanFeedback(null);toast.dismiss("scanner-result");setLastProduct(product); setManualCode(""); if(navigator.vibrate)navigator.vibrate(80);
-    if(evaluation)void saveEvaluationProduct(product);
+
+    if(sizeGate&&!evaluation){
+      if(!matchesExpectedMinimum(product,sizeGate.product,sizeGate.expectedSize)){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Busca la talla ${sizeGate.expectedSize} del mismo artículo y color, o indica que no está exhibida.`});}
+      setSizeGate(null);setScanFeedback(null);setLastProduct(product);setManualCode("");toast.dismiss("size-gate");if(navigator.vibrate)navigator.vibrate(80);
+      void logActivity(product);void logActivity(product,{eventType:"SIZE_RESOLVED",expectedSize:sizeGate.expectedSize});
+      return void toast.success("Talla menor validada",{description:`${product.article} · talla ${product.size}`});
+    }
+
+    setScanFeedback(null);toast.dismiss("scanner-result");setLastProduct(product);setManualCode("");
+    if(!evaluation&&validateSmallestSize){
+      const validation=findMinimumSize(product,productCacheRef.current.values());
+      if(validation.status==="not-minimum"){
+        setSizeGate({product,expectedSize:validation.expectedSize});
+        if(navigator.vibrate)navigator.vibrate([70,60,70]);
+        void logActivity(product);
+        return void toast.warning("Talla menor requerida",{id:"size-gate",description:`La talla esperada para ${product.article} · ${product.color} es ${validation.expectedSize}.`});
+      }
+      if(validation.status==="unknown")toast.info("Validación de talla no aplicada",{description:validation.reason});
+    }
+    if(navigator.vibrate)navigator.vibrate(80);
+    if(evaluation)void saveEvaluationProduct(product);else void logActivity(product);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[storeId,currentStore?.name,isEvaluator,sessionUserId]);
+  },[storeId,currentStore?.name,lookupProduct,sizeGate,validateSmallestSize,isEvaluator,sessionUserId]);
 
   function releaseCameraStream(){
     controlsRef.current?.stop();
@@ -536,13 +658,14 @@ export default function Home() {
 
       if(cameraSession!==cameraSessionRef.current){stream.getTracks().forEach((track)=>track.stop());return;}
       const optimization=await optimizeCamera(stream);
-      const reader=new BrowserMultiFormatOneDReader(undefined,{delayBetweenScanAttempts:60,delayBetweenScanSuccess:120});
+      const reader=new BrowserMultiFormatOneDReader(undefined,{delayBetweenScanAttempts:35,delayBetweenScanSuccess:60});
       reader.possibleFormats=GARMENT_BARCODE_FORMATS;
       setCameraStatus(optimization.focus?"Cámara principal 1× · enfoque continuo":"Cámara trasera principal 1×");
       controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
         if(!result)return;
         const scanned=normalizeBarcode(result.getText()),now=Date.now();
-        if(!scanned||(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<5000))return;
+        if(!scanned)return;
+        if(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<900){lastScanRef.current.at=now;return;}
         lastScanRef.current={code:scanned,at:now};
         void registerCode(scanned,evaluation);
       });
@@ -561,7 +684,15 @@ export default function Home() {
     }
   }
   function stopCamera(){cameraSessionRef.current+=1;releaseCameraStream();setCameraOpen(false);}
-  function goTo(next:View){stopCamera();setView(next);setMobileMenu(false);}
+  function goTo(next:View){if(next==="daily"&&!canViewDaily)return;if(next==="users"&&!isOwner)return;stopCamera();setView(next);setMobileMenu(false);}
+
+  async function registerSmallerSizeNotDisplayed(){
+    if(!sizeGate)return;
+    await logActivity(sizeGate.product,{eventType:"SIZE_NOT_DISPLAYED",expectedSize:sizeGate.expectedSize});
+    const article=sizeGate.product.article;
+    setSizeGate(null);toast.dismiss("size-gate");if(navigator.vibrate)navigator.vibrate(80);
+    toast.success("Incidencia registrada",{description:`${article}: talla menor no exhibida.`});
+  }
 
   async function importExcel(file:File){
     if(!sessionUserId||!storeId)return;
@@ -616,11 +747,13 @@ export default function Home() {
     const targetEvaluation=await ensureEvaluation();if(!targetEvaluation)return;
     const {data,error}=await supabase.from("evaluation_items").insert({evaluation_id:targetEvaluation,store_id:storeId,product_id:null,barcode:null,article:"SIN CÓDIGO",description:"Producto sin identificar",color:"No especificado",size:"No especificado",style:"No especificado",amount:0,observation:"SIN ETIQUETA"}).select("id,scanned_at").single();
     if(error)return void toast.error("No se pudo registrar el producto");
-    setEvaluationItems((items)=>[{id:null,storeId,barcode:"",article:"SIN CÓDIGO",description:"Producto sin identificar",color:"No especificado",size:"No especificado",style:"No especificado",amount:0,rowId:data.id,observation:"SIN ETIQUETA",scannedAt:new Date(data.scanned_at).toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})},...items]);
+    const product:Product={id:null,storeId,barcode:"",article:"SIN CÓDIGO",description:"Producto sin identificar",color:"No especificado",size:"No especificado",style:"No especificado",amount:0,brand:"No especificado",category:"No especificado"};
+    setEvaluationItems((items)=>[{...product,rowId:data.id,observation:"SIN ETIQUETA",scannedAt:new Date(data.scanned_at).toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})},...items]);
+    void logActivity(product,{source:"evaluation",evaluationItemId:data.id,observation:"SIN ETIQUETA"});
     toast.success("Producto sin etiqueta registrado");
   }
-  async function changeObservation(rowId:string,observation:Observation){const previous=evaluationItems;setEvaluationItems((items)=>items.map((item)=>item.rowId===rowId?{...item,observation}:item));const {error}=await supabase.from("evaluation_items").update({observation}).eq("id",rowId);if(error){setEvaluationItems(previous);toast.error("No se guardó la observación");return false;}return true;}
-  async function deleteEvaluationItem(rowId:string){const {error}=await supabase.from("evaluation_items").delete().eq("id",rowId);if(error)return void toast.error("No se pudo eliminar");setEvaluationItems((items)=>items.filter((item)=>item.rowId!==rowId));}
+  async function changeObservation(rowId:string,observation:Observation){const previous=evaluationItems;setEvaluationItems((items)=>items.map((item)=>item.rowId===rowId?{...item,observation}:item));const {error}=await supabase.from("evaluation_items").update({observation}).eq("id",rowId);if(error){setEvaluationItems(previous);toast.error("No se guardó la observación");return false;}await supabase.from("scan_activity").update({observation}).eq("evaluation_item_id",rowId);return true;}
+  async function deleteEvaluationItem(rowId:string){const {error}=await supabase.from("evaluation_items").delete().eq("id",rowId);if(error)return void toast.error("No se pudo eliminar");await supabase.from("scan_activity").delete().eq("evaluation_item_id",rowId);setEvaluationItems((items)=>items.filter((item)=>item.rowId!==rowId));}
 
   const latestScannedEvaluationItem=useMemo(()=>evaluationItems.find((item)=>item.id!==null)??null,[evaluationItems]);
   async function markLatestScannedProduct(observation:Extract<Observation,"PRECIO ERRÓNEO"|"MAL ETIQUETADO">){
@@ -635,6 +768,7 @@ export default function Home() {
     supervisors:managedProfiles.filter((item)=>item.role==="supervisor").length,
     pending:managedProfiles.filter((item)=>!item.is_active||(item.role!=="supervisor"&&!item.store_id)).length,
   }),[managedProfiles]);
+  const dailySummary=useMemo(()=>summarizeDailyActivity(dailyRows),[dailyRows]);
   async function exportEvaluation(){
     const {AlignmentType,BorderStyle,Document,Packer,Paragraph,Table,TableCell,TableRow,TextRun,WidthType}=await import("docx");
     const borders={top:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},bottom:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},left:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},right:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"}};const cell=(value:string,bold=false)=>new TableCell({borders,children:[new Paragraph({children:[new TextRun({text:value,bold})]})]});
@@ -650,7 +784,12 @@ export default function Home() {
 
   return <div className="app-shell"><Toaster position="top-center" richColors/>
     {mobileMenu&&<button className="drawer-backdrop" type="button" aria-label="Cerrar menú" onClick={()=>setMobileMenu(false)}/>}
-    <aside className={`sidebar ${mobileMenu?"sidebar-open":""}`}><div className="brand-block"><Image src="/canaima-logo-sidebar.svg" alt="Grupo Canaima" className="brand-logo" width={520} height={100}/><button className="mobile-close" onClick={()=>setMobileMenu(false)} aria-label="Cerrar menú"><X size={20}/></button></div><div className="product-name"><span>SCANCONTROL</span><small>Control inteligente de productos</small></div><nav className="nav-list"><NavItem icon={ScanLine} label="Escanear producto" active={view==="scanner"} onClick={()=>goTo("scanner")}/>{isEvaluator&&<NavItem icon={ClipboardCheck} label="Evaluación" active={view==="evaluation"} onClick={()=>goTo("evaluation")}/>}<NavItem icon={FileSpreadsheet} label="Catálogo Excel" active={view==="catalog"} onClick={()=>goTo("catalog")}/>{isOwner&&<NavItem icon={Users} label="Usuarios y permisos" active={view==="users"} onClick={()=>goTo("users")}/>}</nav><div className="sidebar-store"><div className="store-mark"><Building2 size={18}/></div><div><span>Tienda activa</span><strong>{currentStore?.name??"Seleccionar tienda"}</strong></div></div><button className="sidebar-user" type="button" onClick={signOut}><div className="avatar">{initials}</div><div><strong>{displayName}</strong><span>{roleLabel}</span></div><LogOut size={18}/></button></aside>
+    <aside className={`sidebar ${mobileMenu?"sidebar-open":""}`}>
+      <div className="brand-block"><Image src="/canaima-logo-sidebar.svg" alt="Grupo Canaima" className="brand-logo" width={520} height={100}/><button className="mobile-close" onClick={()=>setMobileMenu(false)} aria-label="Cerrar menú"><X size={20}/></button></div>
+      <div className="product-name"><span>SCANCONTROL</span><small>Control inteligente de productos</small></div>
+      <nav className="nav-list"><NavItem icon={ScanLine} label="Escanear producto" active={view==="scanner"} onClick={()=>goTo("scanner")}/>{isEvaluator&&<NavItem icon={ClipboardCheck} label="Evaluación" active={view==="evaluation"} onClick={()=>goTo("evaluation")}/>} {canViewDaily&&<NavItem icon={CalendarDays} label="Registro diario" active={view==="daily"} onClick={()=>goTo("daily")}/>}<NavItem icon={FileSpreadsheet} label="Catálogo Excel" active={view==="catalog"} onClick={()=>goTo("catalog")}/>{isOwner&&<NavItem icon={Users} label="Usuarios y permisos" active={view==="users"} onClick={()=>goTo("users")}/>}</nav>
+      <div className="sidebar-store"><div className="store-mark"><Building2 size={18}/></div><div><span>Tienda activa</span><strong>{currentStore?.name??"Seleccionar tienda"}</strong></div></div><button className="sidebar-user" type="button" onClick={signOut}><div className="avatar">{initials}</div><div><strong>{displayName}</strong><span>{roleLabel}</span></div><LogOut size={18}/></button>
+    </aside>
     <main className="workspace">
       <header className="topbar">
         <div className="topbar-brand" aria-label="Grupo Canaima ScanControl">
@@ -666,8 +805,15 @@ export default function Home() {
         <button className="profile-menu-button" onClick={()=>setMobileMenu(true)} type="button" aria-label={`Abrir menú de ${displayName}`}><span>{initials}</span><i/></button>
       </header>
 
-      {view==="scanner"&&<section className="page-content scanner-layout"><div className="scan-panel"><div className="section-heading"><div><Badge className="status-badge"><span className={`status-dot ${catalogLoading?"status-dot-loading":""}`}/> {catalogLoading?"Preparando catálogo…":`Lector instantáneo · ${cachedProductCount.toLocaleString("es-ES")} productos`}</Badge><h2>Escaneo continuo</h2><p>Apunta la cámara al código. El resultado aparecerá al instante y el lector seguirá activo.</p></div><div className="store-pill"><Store size={16}/><span>{currentStore?.name}</span></div></div>{cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline/><div className="camera-mode" aria-live="polite"><Camera size={14}/>{cameraStatus}</div><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Cámara principal 1× · EAN, UPC y Code 128</small></button>}<div className="manual-entry"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div></div>
-        <div className={`result-panel ${lastProduct?"":scanFeedback?"result-missing":"result-empty"}`}>{lastProduct?<><div className="result-success"><CheckCircle2 size={20}/><span>Producto encontrado</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO / ARTÍCULO</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div><span>TAMAÑO</span><strong>{lastProduct.size}</strong></div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div></>:scanFeedback?<div className="missing-product"><div className="missing-head"><Barcode size={21}/><div><strong>Código leído correctamente</strong><span>El lector y la cámara están funcionando</span></div></div><div className="missing-code"><span>CÓDIGO CAPTURADO</span><strong>{scanFeedback.code}</strong></div><div className="missing-copy"><h3>Esta prenda no está en el Excel activo</h3><p>No es posible mostrar artículo, color, tamaño, estilo ni precio porque el archivo de <strong>{scanFeedback.storeName}</strong> no contiene este código.</p></div><div className="missing-note"><FileSpreadsheet size={20}/><span>Carga el inventario que incluya esta prenda o comprueba que corresponda a la tienda seleccionada.</span></div></div>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div></section>}
+      {view==="scanner"&&<section className="page-content scanner-layout">
+        <div className="scan-panel">
+          <div className="section-heading"><div><Badge className="status-badge"><span className={`status-dot ${catalogLoading?"status-dot-loading":""}`}/> {catalogLoading?"Preparando catálogo…":`Lector instantáneo · ${cachedProductCount.toLocaleString("es-ES")} productos`}</Badge><h2>Escaneo continuo</h2><p>Apunta la cámara al código. El resultado aparecerá al instante y el lector seguirá activo.</p></div><div className="store-pill"><Store size={16}/><span>{currentStore?.name}</span></div></div>
+          <div className={`size-validation-control ${validateSmallestSize?"is-active":""}`}><span><Ruler size={19}/></span><div><strong>Validar talla menor</strong><small>Comprueba la talla mínima del mismo artículo y color.</small></div><Switch checked={validateSmallestSize} disabled={Boolean(sizeGate)} onCheckedChange={setValidateSmallestSize} aria-label="Validar talla menor"/></div>
+          {cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline/><div className="camera-mode" aria-live="polite"><Camera size={14}/>{cameraStatus}</div><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Cámara principal 1× · EAN, UPC y Code 128</small></button>}
+        </div>
+        <div className={`result-panel ${lastProduct?(sizeGate?"result-blocked":""):scanFeedback?"result-missing":"result-empty"}`}>{lastProduct?<><div className="result-success"><CheckCircle2 size={20}/><span>{sizeGate?"Producto identificado · falta validar talla":"Producto encontrado"}</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO DE BARRAS · {lastProduct.barcode}</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div className={sizeGate?"size-alert":""}><span>TALLA</span><strong>{lastProduct.size}</strong>{sizeGate&&<small>Esperada: {sizeGate.expectedSize}</small>}</div><div><span>ESTILO</span><strong>{lastProduct.style}</strong></div><div><span>MARCA</span><strong>{lastProduct.brand}</strong></div><div className="wide"><span>CAT 1</span><strong>{lastProduct.category}</strong></div></div><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div>{sizeGate?<div className="size-gate-card" role="alert"><TriangleAlert size={23}/><div><strong>Escáner pausado por validación de talla</strong><p>Escanea la talla <b>{sizeGate.expectedSize}</b> del mismo artículo y color.</p></div><Button onClick={()=>void registerSmallerSizeNotDisplayed()} variant="outline"><Ruler size={17}/> Talla menor no exhibida</Button></div>:<div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div>}</>:scanFeedback?<div className="missing-product"><div className="missing-head"><Barcode size={21}/><div><strong>Código leído correctamente</strong><span>El lector y la cámara están funcionando</span></div></div><div className="missing-code"><span>CÓDIGO CAPTURADO</span><strong>{scanFeedback.code}</strong></div><div className="missing-copy"><h3>Esta prenda no está en el Excel activo</h3><p>No es posible mostrar artículo, color, talla, estilo ni precio porque el archivo de <strong>{scanFeedback.storeName}</strong> no contiene este código.</p></div><div className="missing-note"><FileSpreadsheet size={20}/><span>Carga el inventario que incluya esta prenda o comprueba que corresponda a la tienda seleccionada.</span></div></div>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div>
+        <div className="manual-entry scanner-manual"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div>
+      </section>}
 
       {view==="evaluation"&&isEvaluator&&<section className="page-content evaluation-page">
         <div className="evaluation-toolbar">
@@ -679,7 +825,7 @@ export default function Home() {
         </div>
         {cameraOpen&&<div className="evaluation-camera"><video ref={videoRef} muted playsInline/><div><strong>{cameraStatus}</strong><span>Los productos se agregan y guardan automáticamente.</span></div><Button variant="outline" onClick={stopCamera}>Detener</Button></div>}
         <div className="incident-panel">
-          <div className="incident-copy"><span>ÚLTIMO PRODUCTO</span>{latestScannedEvaluationItem?<><h3>{latestScannedEvaluationItem.description} · {latestScannedEvaluationItem.article}</h3><strong className="incident-price">{money.format(latestScannedEvaluationItem.amount)}</strong><p>Observación del último escaneo</p></>:<p>Escanea un producto para poder marcar una incidencia.</p>}</div>
+          <div className="incident-copy"><span>ÚLTIMO PRODUCTO</span>{latestScannedEvaluationItem?<><h3>{latestScannedEvaluationItem.description} · {latestScannedEvaluationItem.article}</h3><div className="evaluation-product-details"><span>Color <b>{latestScannedEvaluationItem.color}</b></span><span>Talla <b>{latestScannedEvaluationItem.size}</b></span><span>Estilo <b>{latestScannedEvaluationItem.style}</b></span><span>Marca <b>{latestScannedEvaluationItem.brand}</b></span><span>Cat 1 <b>{latestScannedEvaluationItem.category}</b></span></div><strong className="incident-price">{money.format(latestScannedEvaluationItem.amount)}</strong><p>Observación del último escaneo</p></>:<p>Escanea un producto para poder marcar una incidencia.</p>}</div>
           {latestScannedEvaluationItem&&<div className="incident-selector"><span>Observación</span><Select value={latestScannedEvaluationItem.observation} onValueChange={(value)=>void changeObservation(latestScannedEvaluationItem.rowId,value as Observation)}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></div>}
           <div className="incident-actions">
             <Button className={`incident-button ${latestScannedEvaluationItem?.observation==="PRECIO ERRÓNEO"?"is-active":""}`} variant="outline" disabled={!latestScannedEvaluationItem} aria-pressed={latestScannedEvaluationItem?.observation==="PRECIO ERRÓNEO"} onClick={()=>void markLatestScannedProduct("PRECIO ERRÓNEO")}><CircleDollarSign size={18}/> Precio erróneo</Button>
@@ -688,6 +834,17 @@ export default function Home() {
         </div>
         <div className="summary-grid"><div className="summary-total"><span className="summary-icon" aria-hidden="true"><ClipboardCheck size={20}/></span><span>EVALUADOS</span><strong>{evaluationItems.length}</strong></div>{summary.map((item)=><div key={item.observation}><EvaluationSummaryIcon observation={item.observation}/><span>{item.observation}</span><strong>{item.count}</strong></div>)}</div>
         <div className="data-card"><div className="data-card-head"><div><strong>Productos evaluados</strong><span>{evaluationItems.length} registros guardados</span></div><Button variant="outline" onClick={exportEvaluation} disabled={!evaluationItems.length}><Download size={17}/> Descargar Word editable</Button></div><div className="evaluation-table-wrap"><table className="evaluation-table"><thead><tr><th>Código / artículo</th><th>Descripción</th><th>Detalles</th><th>Monto</th><th>Observación</th><th/></tr></thead><tbody>{evaluationItems.length?evaluationItems.map((item)=><tr key={item.rowId}><td><strong>{item.article}</strong><span>{item.scannedAt}</span></td><td>{item.description}</td><td>{item.color} · {item.size}</td><td><strong>{money.format(item.amount)}</strong></td><td><Select value={item.observation} onValueChange={(value)=>void changeObservation(item.rowId,value as Observation)}><SelectTrigger className="observation"><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></td><td><button className="delete-row" onClick={()=>void deleteEvaluationItem(item.rowId)} aria-label={`Eliminar ${item.article}`}><X size={16}/></button></td></tr>):<tr><td colSpan={6} className="empty-table">Aún no hay productos en esta evaluación.</td></tr>}</tbody></table></div></div>
+      </section>}
+
+      {view==="daily"&&canViewDaily&&<section className="page-content daily-page">
+        <div className="daily-header"><div><Badge variant="outline"><CalendarDays size={14}/> Control operativo</Badge><h2>Registro diario</h2><p>Actividad de escaneo e incidencias por empleado, Marca y Cat 1.</p></div><div className="daily-filters"><label>Fecha<Input type="date" value={dailyDate} onChange={(event)=>setDailyDate(event.target.value)}/></label><Button variant="outline" onClick={()=>void loadDailyActivity(dailyDate,storeId)} disabled={dailyLoading}><RefreshCw className={dailyLoading?"spin":""} size={17}/> Actualizar</Button></div></div>
+        {dailyError?<div className="daily-setup"><TriangleAlert size={25}/><div><strong>Registro diario pendiente de activación</strong><p>{dailyError}</p></div></div>:<>
+          <div className="daily-summary-grid"><div><span><ScanLine size={20}/></span><small>ESCANEOS</small><strong>{dailySummary.totalScans}</strong></div><div><span><CircleDollarSign size={20}/></span><small>PRECIO ERRÓNEO</small><strong>{dailySummary.priceErrors}</strong></div><div><span><Tags size={20}/></span><small>MAL ETIQUETADO</small><strong>{dailySummary.mislabeled}</strong></div><div><span><Hand size={20}/></span><small>SIN ETIQUETA</small><strong>{dailySummary.withoutLabel}</strong></div><div><span><Ruler size={20}/></span><small>TALLA MENOR NO EXHIBIDA</small><strong>{dailySummary.smallerSizeNotDisplayed}</strong></div></div>
+          {dailyLoading?<div className="daily-loading"><LoaderCircle className="spin" size={28}/><span>Cargando actividad del día…</span></div>:<>
+            <div className="daily-groups"><div className="daily-group-card"><h3><Users size={19}/> Por empleado</h3>{dailySummary.byEmployee.length?dailySummary.byEmployee.map((item)=><div key={item.label}><span>{item.label}</span><b>{item.scans} escaneos</b><small>{item.incidents} incidencias</small></div>):<p>Sin actividad para esta fecha.</p>}</div><div className="daily-group-card"><h3><Boxes size={19}/> Por Marca</h3>{dailySummary.byBrand.length?dailySummary.byBrand.map((item)=><div key={item.label}><span>{item.label}</span><b>{item.scans}</b><small>{item.incidents} incidencias</small></div>):<p>Sin datos de Marca.</p>}</div><div className="daily-group-card"><h3><FileSpreadsheet size={19}/> Por Cat 1</h3>{dailySummary.byCategory.length?dailySummary.byCategory.map((item)=><div key={item.label}><span>{item.label}</span><b>{item.scans}</b><small>{item.incidents} incidencias</small></div>):<p>Sin datos de Cat 1.</p>}</div></div>
+            <div className="daily-detail"><div className="data-card-head"><div><strong>Detalle del día</strong><span>{dailyRows.length} registros · {currentStore?.name}</span></div><Badge variant="outline">{dailyDate}</Badge></div><div className="daily-list">{dailyRows.length?dailyRows.map((row)=><article key={row.id} className={`daily-row daily-row-${row.eventType.toLowerCase()}`}><div className="daily-row-icon">{row.eventType==="SIZE_NOT_DISPLAYED"?<Ruler size={20}/>:<Barcode size={20}/>}</div><div className="daily-row-product"><strong>{row.eventType==="SIZE_NOT_DISPLAYED"?"Talla menor no exhibida":row.description||row.article}</strong><span>{row.article} · {row.color} · talla {row.size}{row.expectedSize?` · esperada ${row.expectedSize}`:""}</span><small>{row.brand} · {row.category}</small></div><div className="daily-row-person"><strong>{row.employeeName}</strong><span>{new Date(row.createdAt).toLocaleTimeString("es-VE",{hour:"numeric",minute:"2-digit"})}</span><small>{row.observation??(row.eventType==="SCAN"?"Sin incidencias":"Validación de talla")}</small></div></article>):<div className="empty-table">No hay actividad registrada en esta fecha.</div>}</div></div>
+          </>}
+        </>}
       </section>}
 
       {view==="catalog"&&<section className="page-content catalog-page"><div className="catalog-intro"><div className="catalog-icon"><FileSpreadsheet size={30}/></div><div><Badge variant="outline">Catálogo independiente</Badge><h2>Excel de {currentStore?.name}</h2><p>Este archivo solo modifica los productos y precios de la tienda activa. Las otras 15 tiendas permanecerán sin cambios.</p></div></div><div className="catalog-grid"><div className={`upload-card ${uploading?"uploading":""}`} aria-live="polite" aria-busy={Boolean(uploading)}><input ref={fileInputRef} type="file" disabled={Boolean(uploading)} accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" onChange={(event)=>{const file=event.currentTarget.files?.[0];event.currentTarget.value="";if(file)void importExcel(file);}}/>{uploading?<><div className="excel-uploading-icon"><ExcelDocumentIcon/><LoaderCircle className="spin" size={22}/></div><strong>{uploadLabel}</strong><span className="upload-file-name">{uploading.fileName}</span><div className="upload-progress-copy"><span>{uploadLabel}</span><strong>{uploadPercent}%</strong></div><div className="upload-progress"><span style={{width:`${uploadPercent}%`}}/></div><small>No cierres esta pantalla hasta que aparezca la confirmación</small></>:<><ExcelDocumentIcon/><strong>Cargar o reemplazar archivo</strong><span className="upload-format">Formato XLSX o XLS · Máximo 20 MB</span><Button className="upload-select-button" type="button" onClick={()=>fileInputRef.current?.click()}><Upload size={19}/> Seleccionar Excel</Button><small className="sr-only">Elige el inventario de esta tienda; la carga comenzará automáticamente.</small></>}</div><div className="catalog-status"><h2>Catálogo activo</h2><div className="catalog-file-row"><ExcelDocumentIcon size="small"/><div><h3>{catalogMeta?.fileName??"No se ha cargado un archivo"}</h3><Badge className={catalogMeta?"active-catalog":"empty-catalog"}>{catalogMeta?<><Check size={13}/> Actualizado</>:"Sin catálogo"}</Badge></div></div><div className="catalog-active-detail"><PackageSearch size={20}/><span>{(catalogMeta?.rowCount??0).toLocaleString("es-ES")} productos</span></div><div className="catalog-active-detail"><Clock3 size={20}/><span>Última actualización: {formatCatalogUpdatedAt(catalogMeta?.activatedAt)}</span></div><div className="catalog-meta" aria-hidden="true"><div><span>Tienda</span><strong>{currentStore?.name}</strong></div><div><span>Alcance</span><strong>Solo esta tienda</strong></div></div></div></div>{uploadFeedback&&<div className={`upload-feedback upload-feedback-${uploadFeedback.kind}`} role={uploadFeedback.kind==="error"?"alert":"status"}>{uploadFeedback.kind==="success"?<CheckCircle2 size={22}/>:<X size={22}/>}<div><strong>{uploadFeedback.title}</strong><p>{uploadFeedback.message}</p></div></div>}<div className="safety-note"><ShieldCheck size={22}/><div><strong>El catálogo de esta tienda no modifica las demás sucursales.</strong><p className="sr-only">Importación segura por tienda. El catálogo de una sucursal nunca modifica el de las demás. La versión anterior queda conservada.</p></div></div></section>}
@@ -699,6 +856,7 @@ export default function Home() {
     <nav className="mobile-bottom-nav" aria-label="Navegación principal">
       <button className={view==="scanner"?"is-active":""} aria-current={view==="scanner"?"page":undefined} onClick={()=>goTo("scanner")} type="button"><ScanLine size={21}/><span>Escanear</span></button>
       {isEvaluator&&<button className={view==="evaluation"?"is-active":""} aria-current={view==="evaluation"?"page":undefined} onClick={()=>goTo("evaluation")} type="button"><ClipboardCheck size={21}/><span>Evaluación</span></button>}
+      {canViewDaily&&<button className={view==="daily"?"is-active":""} aria-current={view==="daily"?"page":undefined} onClick={()=>goTo("daily")} type="button"><CalendarDays size={21}/><span>Registro</span></button>}
       <button className={view==="catalog"?"is-active":""} aria-current={view==="catalog"?"page":undefined} onClick={()=>goTo("catalog")} type="button"><FileSpreadsheet size={21}/><span>Catálogo</span></button>
       {isOwner&&<button className={view==="users"?"is-active":""} aria-current={view==="users"?"page":undefined} onClick={()=>goTo("users")} type="button"><Users size={21}/><span>Usuarios</span></button>}
     </nav>

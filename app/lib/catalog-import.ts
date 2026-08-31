@@ -9,6 +9,8 @@ export type CatalogImportProduct = {
   size: string;
   style: string;
   amount: number;
+  brand: string;
+  category: string;
 };
 
 export type ParsedCatalog = {
@@ -19,7 +21,7 @@ export type ParsedCatalog = {
   duplicateRows: number;
 };
 
-type CatalogColumn = "barcode" | "article" | "description" | "color" | "size" | "style" | "amount";
+type CatalogColumn = "barcode" | "article" | "description" | "color" | "size" | "style" | "amount" | "brand" | "category";
 type ColumnMap = Record<CatalogColumn, number>;
 
 const HEADER_ALIASES: Record<CatalogColumn, string[]> = {
@@ -30,6 +32,8 @@ const HEADER_ALIASES: Record<CatalogColumn, string[]> = {
   size: ["tamano", "talla", "size"],
   style: ["estilo", "style"],
   amount: ["monto a pagar", "monto pagar", "precio final", "monto neto", "precio venta", "precio"],
+  brand: ["marca"],
+  category: ["cat 1", "cat1", "categoria 1"],
 };
 
 const normalizeHeader = (value: unknown) => String(value ?? "")
@@ -69,6 +73,8 @@ function resolveColumns(row: unknown[]): ColumnMap {
     size: find(HEADER_ALIASES.size),
     style: find(HEADER_ALIASES.style),
     amount: find(HEADER_ALIASES.amount),
+    brand: find(HEADER_ALIASES.brand),
+    category: find(HEADER_ALIASES.category),
   };
 }
 
@@ -119,6 +125,8 @@ export function parseCatalogWorkbook(workbook: WorkBook): ParsedCatalog {
         size: columns.size >= 0 ? cleanText(row[columns.size]) : "No especificado",
         style: columns.style >= 0 ? cleanText(row[columns.style]) : "No especificado",
         amount: parseAmount(row[columns.amount]),
+        brand: columns.brand >= 0 ? cleanText(row[columns.brand]) : "No especificado",
+        category: columns.category >= 0 ? cleanText(row[columns.category]) : "No especificado",
       });
     }
 
@@ -142,6 +150,9 @@ export function getImportErrorMessage(error: unknown) {
   }
   if (normalized.includes("variant") && normalized.includes("column")) {
     return "La estructura de productos de Supabase está desactualizada. Actualiza la base de datos e inténtalo de nuevo.";
+  }
+  if ((normalized.includes("brand") || normalized.includes("category")) && normalized.includes("column")) {
+    return "Activa primero la actualización de Registro diario en Supabase para importar Marca y Cat 1.";
   }
   if (normalized.includes("failed to fetch") || normalized.includes("network")) {
     return "Se perdió la conexión durante la carga. Comprueba internet e inténtalo nuevamente.";
