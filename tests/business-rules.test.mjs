@@ -149,3 +149,18 @@ test("provides an external installation page with share and device guidance", as
   assert.match(installer, /navigator\.share/);
   assert.ok(qr.length > 1000);
 });
+
+test("keeps the selected Excel alive until the mobile import finishes", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const handlerStart = page.indexOf("function handleExcelSelection");
+  const importerStart = page.indexOf("async function importExcel");
+  const handler = page.slice(handlerStart, importerStart);
+
+  assert.ok(handlerStart >= 0);
+  assert.match(handler, /importExcel\(file\)\.finally/);
+  assert.match(handler, /fileInputRef\.current===input/);
+  assert.doesNotMatch(handler, /event\.currentTarget\.value=""/);
+  assert.ok(handler.indexOf("importExcel(file).finally") < handler.indexOf("fileInputRef.current===input"));
+  assert.match(page, /const fileBytesPromise=file\.arrayBuffer\(\)/);
+  assert.match(page, /onChange=\{handleExcelSelection\}/);
+});
