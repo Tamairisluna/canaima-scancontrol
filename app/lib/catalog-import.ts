@@ -19,9 +19,10 @@ export type ParsedCatalog = {
   totalRows: number;
   skippedRows: number;
   duplicateRows: number;
+  unavailableRows: number;
 };
 
-type CatalogColumn = "barcode" | "article" | "description" | "color" | "size" | "style" | "amount" | "brand" | "category";
+type CatalogColumn = "barcode" | "article" | "description" | "color" | "size" | "style" | "amount" | "brand" | "category" | "quantity";
 type ColumnMap = Record<CatalogColumn, number>;
 
 const HEADER_ALIASES: Record<CatalogColumn, string[]> = {
@@ -34,6 +35,7 @@ const HEADER_ALIASES: Record<CatalogColumn, string[]> = {
   amount: ["monto a pagar", "monto pagar", "precio final", "monto neto", "precio venta", "precio"],
   brand: ["marca"],
   category: ["cat 1", "cat1", "categoria 1"],
+  quantity: ["cantidad", "existencia", "existencias", "stock"],
 };
 
 const normalizeHeader = (value: unknown) => String(value ?? "")
@@ -59,6 +61,14 @@ const parseAmount = (value: unknown) => {
   return Number.isFinite(amount) ? amount : 0;
 };
 
+const parseQuantity = (value: unknown) => {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const normalized = String(value ?? "").trim().replace(/\s/g, "").replace(/,/g, ".");
+  if (!normalized) return null;
+  const quantity = Number(normalized);
+  return Number.isFinite(quantity) ? quantity : null;
+};
+
 function resolveColumns(row: unknown[]): ColumnMap {
   const headers = row.map(normalizeHeader);
   const find = (aliases: string[]) => aliases
@@ -75,6 +85,7 @@ function resolveColumns(row: unknown[]): ColumnMap {
     amount: find(HEADER_ALIASES.amount),
     brand: find(HEADER_ALIASES.brand),
     category: find(HEADER_ALIASES.category),
+    quantity: find(HEADER_ALIASES.quantity),
   };
 }
 
@@ -104,9 +115,15 @@ export function parseCatalogWorkbook(workbook: WorkBook): ParsedCatalog {
     const products: CatalogImportProduct[] = [];
     let skippedRows = 0;
     let duplicateRows = 0;
+    let unavailableRows = 0;
     const dataRows = rows.slice(headerIndex + 1);
 
     for (const row of dataRows) {
+      const quantity = columns.quantity >= 0 ? parseQuantity(row[columns.quantity]) : null;
+      if (quantity !== null && quantity <= 0) {
+        unavailableRows += 1;
+        continue;
+      }
       const barcode = normalizeBarcode(row[columns.barcode]);
       if (!barcode) {
         skippedRows += 1;
@@ -131,7 +148,7 @@ export function parseCatalogWorkbook(workbook: WorkBook): ParsedCatalog {
     }
 
     if (products.length) {
-      return { products, sourceSheet, totalRows: dataRows.length, skippedRows, duplicateRows };
+      return { products, sourceSheet, totalRows: dataRows.length, skippedRows, duplicateRows, unavailableRows };
     }
   }
 

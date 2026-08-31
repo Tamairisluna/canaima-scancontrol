@@ -58,6 +58,28 @@ test("rejects Código, Artículo and SKU as barcode substitutes", async () => {
   );
 });
 
+test("ignores unavailable variants when calculating the real minimum size", async () => {
+  const { parseCatalogWorkbook } = await vite.ssrLoadModule("/app/lib/catalog-import.ts");
+  const { findMinimumSize } = await vite.ssrLoadModule("/app/lib/size-validation.ts");
+  const workbook = utils.book_new();
+  const sheet = utils.aoa_to_sheet([
+    ["Artículo", "Color", "Tamaño", "Código barras", "Monto a Pagar", "Cantidad"],
+    ["ZAP-01", "BLK-GRN", "35", "1000000000035", 59.99, 0],
+    ["ZAP-01", "BLK-GRN", "36", "1000000000036", 59.99, 2],
+    ["ZAP-01", "BLK-GRN", "37", "1000000000037", 59.99, 1],
+  ]);
+  utils.book_append_sheet(workbook, sheet, "Inventario");
+
+  const parsed = parseCatalogWorkbook(workbook);
+  assert.equal(parsed.unavailableRows, 1);
+  assert.deepEqual(parsed.products.map((product) => product.size), ["36", "37"]);
+  assert.deepEqual(findMinimumSize(parsed.products[1], parsed.products), {
+    status: "not-minimum",
+    expectedSize: "36",
+    candidates: 2,
+  });
+});
+
 test("derives Sin incidencias from the complete evaluation total", async () => {
   const { summarizeEvaluation } = await vite.ssrLoadModule("/app/lib/evaluation.ts");
   const items = [
@@ -134,6 +156,10 @@ test("keeps scanner latency, camera and PWA safeguards explicit", async () => {
   const worker = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
   assert.match(page, /now-lastScanRef\.current\.at<900/);
   assert.match(page, /width: \{ ideal: 1920 \}/);
+  assert.match(page, /track\.contentHint="detail"/);
+  assert.match(page, /focusMode:"single-shot"/);
+  assert.match(page, /focusMode:"continuous"/);
+  assert.match(page, /resizeMode:\{ideal:"none"\}/);
   assert.match(page, /navigator\.vibrate\(80\)/);
   assert.equal(manifest.display, "standalone");
   assert.ok(manifest.icons.some((icon) => icon.sizes === "512x512"));

@@ -93,11 +93,16 @@ const GARMENT_BARCODE_FORMATS = [
 type ExtendedCameraCapabilities = MediaTrackCapabilities & {
   focusMode?: string[];
   zoom?: { min: number; max: number; step: number };
+  exposureMode?: string[];
+  whiteBalanceMode?: string[];
 };
 
 type ExtendedCameraConstraintSet = MediaTrackConstraintSet & {
   focusMode?: string;
   zoom?: number;
+  exposureMode?: string;
+  whiteBalanceMode?: string;
+  resizeMode?: ConstrainDOMString;
 };
 
 function cameraDeviceScore(device: MediaDeviceInfo, index: number) {
@@ -129,22 +134,60 @@ function cameraConstraints(deviceId?: string): MediaStreamConstraints {
       ...(deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: "environment" } }),
       width: { ideal: 1920 },
       height: { ideal: 1080 },
-      frameRate: { ideal: 30, min: 20 },
-    },
+      aspectRatio: { ideal: 16 / 9 },
+      frameRate: { ideal: 30, min: 24, max: 30 },
+      resizeMode: { ideal: "none" },
+    } as ExtendedCameraConstraintSet,
   };
 }
 
-async function optimizeCamera(stream: MediaStream) {
-  const track = stream.getVideoTracks()[0];
-  if (!track) return { focus: false, zoom: false };
-  const capabilities = track.getCapabilities?.() as ExtendedCameraCapabilities | undefined;
-  const advanced: ExtendedCameraConstraintSet = {};
-  if (capabilities?.focusMode?.includes("continuous")) advanced.focusMode = "continuous";
-  if (capabilities?.zoom && capabilities.zoom.min <= 1 && capabilities.zoom.max >= 1) advanced.zoom = 1;
-  if (Object.keys(advanced).length) {
-    try { await track.applyConstraints({ advanced: [advanced] }); } catch { /* El enfoque automático del dispositivo sigue disponible. */ }
+async function applyCameraSetting(track:MediaStreamTrack,setting:ExtendedCameraConstraintSet){
+  try { await track.applyConstraints({ advanced:[setting] }); return true; }
+  catch { return false; }
+}
+
+async function focusCameraTrack(track:MediaStreamTrack,forceSingleShot=false){
+  const capabilities=track.getCapabilities?.() as ExtendedCameraCapabilities|undefined;
+  const modes=capabilities?.focusMode??[];
+  let focused=false;
+  if(forceSingleShot&&modes.includes("single-shot")){
+    focused=await applyCameraSetting(track,{focusMode:"single-shot"});
+    if(focused)await new Promise<void>((resolve)=>setTimeout(resolve,280));
   }
-  return { focus: Boolean(advanced.focusMode), zoom: advanced.zoom === 1 };
+  if(modes.includes("continuous"))focused=await applyCameraSetting(track,{focusMode:"continuous"})||focused;
+  else if(!focused&&modes.includes("single-shot"))focused=await applyCameraSetting(track,{focusMode:"single-shot"});
+  return focused;
+}
+
+async function prepareVideoPreview(video:HTMLVideoElement,stream:MediaStream){
+  video.srcObject=stream;
+  video.muted=true;
+  video.playsInline=true;
+  if(video.readyState<2){
+    await Promise.race([
+      new Promise<void>((resolve)=>video.addEventListener("loadeddata",()=>resolve(),{once:true})),
+      new Promise<void>((resolve)=>setTimeout(resolve,1200)),
+    ]);
+  }
+  try{await video.play();}catch{/* ZXing volverá a iniciar la reproducción al conectar el lector. */}
+}
+
+async function optimizeCamera(stream: MediaStream,video:HTMLVideoElement) {
+  const track = stream.getVideoTracks()[0];
+  if (!track) return { focus:false,zoom:false,width:0,height:0 };
+  track.contentHint="detail";
+  const capabilities = track.getCapabilities?.() as ExtendedCameraCapabilities | undefined;
+  const width=Math.min(1920,capabilities?.width?.max??1920);
+  const height=Math.min(1080,capabilities?.height?.max??1080);
+  try{await track.applyConstraints({width:{ideal:width},height:{ideal:height},aspectRatio:{ideal:16/9},frameRate:{ideal:30,max:30},resizeMode:{ideal:"none"}} as ExtendedCameraConstraintSet);}catch{/* Se conserva la mejor resolución concedida por el dispositivo. */}
+  let zoomed=false;
+  if(capabilities?.zoom&&capabilities.zoom.min<=1&&capabilities.zoom.max>=1)zoomed=await applyCameraSetting(track,{zoom:1});
+  if(capabilities?.exposureMode?.includes("continuous"))await applyCameraSetting(track,{exposureMode:"continuous"});
+  if(capabilities?.whiteBalanceMode?.includes("continuous"))await applyCameraSetting(track,{whiteBalanceMode:"continuous"});
+  await prepareVideoPreview(video,stream);
+  const focused=await focusCameraTrack(track,true);
+  const settings=track.getSettings();
+  return {focus:focused,zoom:zoomed,width:settings.width??width,height:settings.height??height};
 }
 
 function NavItem({ icon: Icon, label, active, onClick }: { icon: typeof ScanLine; label: string; active: boolean; onClick: () => void }) {
@@ -670,6 +713,19 @@ export default function Home() {
     if(videoRef.current)videoRef.current.srcObject=null;
   }
 
+  async function refocusActiveCamera(){
+    const stream=videoRef.current?.srcObject;
+    if(!(stream instanceof MediaStream))return;
+    const track=stream.getVideoTracks()[0];
+    if(!track||track.readyState!=="live")return;
+    setCameraStatus("Reenfocando cámara principal 1×…");
+    const focused=await focusCameraTrack(track,true);
+    if(track.readyState!=="live")return;
+    const settings=track.getSettings();
+    const quality=settings.width&&settings.height?` · ${settings.width}×${settings.height}`:"";
+    setCameraStatus(focused?`Cámara principal 1× · enfoque continuo${quality}`:`Cámara trasera principal 1×${quality}`);
+  }
+
   async function startCamera(evaluation=false){
     const cameraSession=++cameraSessionRef.current;
     releaseCameraStream();
@@ -698,10 +754,11 @@ export default function Home() {
       }
 
       if(cameraSession!==cameraSessionRef.current){stream.getTracks().forEach((track)=>track.stop());return;}
-      const optimization=await optimizeCamera(stream);
+      const optimization=await optimizeCamera(stream,videoElement);
       const reader=new BrowserMultiFormatOneDReader(undefined,{delayBetweenScanAttempts:35,delayBetweenScanSuccess:60});
       reader.possibleFormats=GARMENT_BARCODE_FORMATS;
-      setCameraStatus(optimization.focus?"Cámara principal 1× · enfoque continuo":"Cámara trasera principal 1×");
+      const quality=optimization.width&&optimization.height?` · ${optimization.width}×${optimization.height}`:"";
+      setCameraStatus(optimization.focus?`Cámara principal 1× · enfoque continuo${quality}`:`Cámara trasera principal 1×${quality}`);
       controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
         if(!result)return;
         const scanned=normalizeBarcode(result.getText()),now=Date.now();
@@ -799,9 +856,14 @@ export default function Home() {
       const {error:activateError}=await supabase.rpc("activate_catalog",{target_catalog:catalogId});if(activateError)throw activateError;
       setUploading({stage:"caching",fileName,done:products.length,total:products.length});
       await Promise.all([loadCatalogMeta(targetStoreId),loadProductCache(targetStoreId)]);
+      setSizeGate(null);
+      setLastProduct(null);
+      setScanFeedback(null);
+      toast.dismiss("size-gate");
       const details=[`${products.length.toLocaleString("es-ES")} productos listos para escanear en ${targetStoreName}.`];
       if(parsed.skippedRows)details.push(`${parsed.skippedRows.toLocaleString("es-ES")} filas sin código fueron omitidas.`);
       if(parsed.duplicateRows)details.push(`${parsed.duplicateRows.toLocaleString("es-ES")} códigos repetidos fueron omitidos.`);
+      if(parsed.unavailableRows)details.push(`${parsed.unavailableRows.toLocaleString("es-ES")} variantes sin existencia fueron excluidas del cálculo de talla menor.`);
       const message=details.join(" ");
       setUploadFeedback({kind:"success",title:"Excel cargado correctamente",message});
       toast.success("Catálogo activado",{description:message});
@@ -889,7 +951,7 @@ export default function Home() {
         <div className="scan-panel">
           <div className="section-heading"><div><Badge className="status-badge"><span className={`status-dot ${catalogLoading?"status-dot-loading":""}`}/> {catalogLoading?"Preparando catálogo…":`Lector instantáneo · ${cachedProductCount.toLocaleString("es-ES")} productos`}</Badge><h2>Escaneo continuo</h2><p>Apunta la cámara al código. El resultado aparecerá al instante y el lector seguirá activo.</p></div><div className="store-pill"><Store size={16}/><span>{currentStore?.name}</span></div></div>
           <div className={`size-validation-control ${validateSmallestSize?"is-active":""}`}><span><Ruler size={19}/></span><div><strong>Validar talla menor</strong><small>{validateSmallestSize?"Validación activa: el escáner comprobará la talla mínima.":"Comprueba la talla mínima del mismo artículo y color."}</small></div><div className="size-validation-toggle"><b>{validateSmallestSize?"ACTIVA":"INACTIVA"}</b><Switch className="size-validation-switch" checked={validateSmallestSize} disabled={Boolean(sizeGate)} onCheckedChange={setValidateSmallestSize} aria-label="Validar talla menor"/></div></div>
-          {cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline/><div className="camera-mode" aria-live="polite"><Camera size={14}/>{cameraStatus}</div><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Cámara principal 1× · EAN, UPC y Code 128</small></button>}
+          {cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline onClick={()=>void refocusActiveCamera()} title="Toca la imagen para reenfocar"/><div className="camera-mode" aria-live="polite"><Camera size={14}/>{cameraStatus}</div><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Cámara principal 1× · EAN, UPC y Code 128</small></button>}
         </div>
         <div className={`result-panel ${lastProduct?(sizeGate?"result-blocked":""):scanFeedback?"result-missing":"result-empty"}`}>{lastProduct?<><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className="result-success"><CheckCircle2 size={20}/><span>{sizeGate?"Producto identificado · falta validar talla":"Producto encontrado"}</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO DE BARRAS · {lastProduct.barcode}</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div className={sizeGate?"size-alert":""}><span>TALLA</span><strong>{lastProduct.size}</strong>{sizeGate&&<small>Esperada: {sizeGate.expectedSize}</small>}</div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div>{sizeGate?<div className="size-gate-card" role="alert"><TriangleAlert size={23}/><div><strong>Escáner pausado por validación de talla</strong><p>Escanea la talla <b>{sizeGate.expectedSize}</b> del mismo artículo y color.</p></div><Button onClick={()=>void registerSmallerSizeNotDisplayed()} variant="outline"><Ruler size={17}/> Talla menor no exhibida</Button></div>:<div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div>}</>:scanFeedback?<div className="missing-product"><div className="missing-head"><Barcode size={21}/><div><strong>Código leído correctamente</strong><span>El lector y la cámara están funcionando</span></div></div><div className="missing-code"><span>CÓDIGO CAPTURADO</span><strong>{scanFeedback.code}</strong></div><div className="missing-copy"><h3>Esta prenda no está en el Excel activo</h3><p>No es posible mostrar artículo, color, talla, estilo ni precio porque el archivo de <strong>{scanFeedback.storeName}</strong> no contiene este código.</p></div><div className="missing-note"><FileSpreadsheet size={20}/><span>Carga el inventario que incluya esta prenda o comprueba que corresponda a la tienda seleccionada.</span></div></div>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div>
         <div className="manual-entry scanner-manual"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div>
@@ -903,7 +965,7 @@ export default function Home() {
             <Button onClick={()=>startCamera(true)}><Camera size={17}/> Escanear continuamente</Button>
           </div>
         </div>
-        {cameraOpen&&<div className="evaluation-camera"><video ref={videoRef} muted playsInline/><div><strong>{cameraStatus}</strong><span>Los productos se agregan y guardan automáticamente.</span></div><Button variant="outline" onClick={stopCamera}>Detener</Button></div>}
+        {cameraOpen&&<div className="evaluation-camera"><video ref={videoRef} muted playsInline onClick={()=>void refocusActiveCamera()} title="Toca la imagen para reenfocar"/><div><strong>{cameraStatus}</strong><span>Los productos se agregan y guardan automáticamente.</span></div><Button variant="outline" onClick={stopCamera}>Detener</Button></div>}
         <div className="incident-panel">
           <div className="incident-copy"><span>ÚLTIMO PRODUCTO</span>{latestScannedEvaluationItem?<><h3>{latestScannedEvaluationItem.description} · {latestScannedEvaluationItem.article}</h3><div className="evaluation-product-details"><span>Color <b>{latestScannedEvaluationItem.color}</b></span><span>Talla <b>{latestScannedEvaluationItem.size}</b></span><span>Estilo <b>{latestScannedEvaluationItem.style}</b></span></div><strong className="incident-price">{money.format(latestScannedEvaluationItem.amount)}</strong><p>Observación del último escaneo</p></>:<p>Escanea un producto para poder marcar una incidencia.</p>}</div>
           {latestScannedEvaluationItem&&<div className="incident-selector"><span>Observación</span><Select value={latestScannedEvaluationItem.observation} onValueChange={(value)=>void changeObservation(latestScannedEvaluationItem.rowId,value as Observation)}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></div>}
