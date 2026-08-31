@@ -98,7 +98,7 @@ test("does not block when size formats cannot be ordered safely", async () => {
 });
 
 test("summarizes daily activity by incidents, employee, Marca and Cat 1", async () => {
-  const { summarizeDailyActivity } = await vite.ssrLoadModule("/app/lib/daily-activity.ts");
+  const { summarizeActivityByStore, summarizeDailyActivity } = await vite.ssrLoadModule("/app/lib/daily-activity.ts");
   const base = { id:"1",createdAt:"2026-08-31T12:00:00Z",employeeId:"u1",employeeName:"Ana",storeId:"s1",storeName:"Tienda",source:"scanner",barcode:"1",article:"A",description:"Camisa",color:"Azul",size:"M",expectedSize:"",style:"Casual",amount:10,brand:"Canaima",category:"Camisas" };
   const summary = summarizeDailyActivity([
     { ...base, eventType:"SCAN", observation:"PRECIO ERRÓNEO" },
@@ -106,9 +106,26 @@ test("summarizes daily activity by incidents, employee, Marca and Cat 1", async 
     { ...base, id:"3", eventType:"SIZE_NOT_DISPLAYED", observation:null, expectedSize:"S" },
   ]);
   assert.equal(summary.totalScans, 2);
+  assert.equal(summary.incidents, 2);
   assert.equal(summary.priceErrors, 1);
   assert.equal(summary.smallerSizeNotDisplayed, 1);
   assert.deepEqual(summary.byBrand[0], { label:"Canaima", scans:2, incidents:2 });
+  assert.deepEqual(summarizeActivityByStore([
+    { storeId:"s1", eventType:"SCAN", observation:"PRECIO ERRÓNEO" },
+    { storeId:"s1", eventType:"SCAN", observation:null },
+  ], [{ id:"s1", name:"Tienda" }])[0], {
+    storeId:"s1", storeName:"Tienda", scans:2, incidents:1, priceErrors:1, mislabeled:0, withoutLabel:0, smallerSizeNotDisplayed:0,
+  });
+});
+
+test("builds a Caracas business week from Monday to Monday", async () => {
+  const { caracasWeekRange } = await vite.ssrLoadModule("/app/lib/daily-activity.ts");
+  assert.deepEqual(caracasWeekRange("2026-08-31"), {
+    startDate:"2026-08-31",
+    endDateExclusive:"2026-09-07",
+    startIso:"2026-08-31T04:00:00.000Z",
+    endIso:"2026-09-07T04:00:00.000Z",
+  });
 });
 
 test("keeps scanner latency, camera and PWA safeguards explicit", async () => {

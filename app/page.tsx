@@ -15,7 +15,7 @@ import { toast } from "sonner";
 import { createProvisioningClient, supabase } from "@/app/lib/supabase";
 import { normalizeBarcode } from "@/app/lib/barcode";
 import { OBSERVATIONS, summarizeEvaluation, type Observation } from "@/app/lib/evaluation";
-import { dateInputValue, summarizeDailyActivity, type DailyActivityRow } from "@/app/lib/daily-activity";
+import { caracasWeekRange, dateInputValue, isActivityIncident, summarizeActivityByStore, summarizeDailyActivity, type ActivityCountRow, type DailyActivityRow, type StoreActivitySummary } from "@/app/lib/daily-activity";
 import { findMinimumSize, matchesExpectedMinimum } from "@/app/lib/size-validation";
 
 type RoleCode = "employee" | "manager" | "supervisor";
@@ -62,6 +62,21 @@ function formatCatalogUpdatedAt(value: string | null | undefined) {
   const time = new Intl.DateTimeFormat("es-DO", { hour: "numeric", minute: "2-digit" }).format(date);
   if (isToday) return `Hoy, ${time}`;
   return new Intl.DateTimeFormat("es-DO", { dateStyle: "medium", timeStyle: "short" }).format(date);
+}
+
+function dailyRowFromRpc(row: Record<string, unknown>): DailyActivityRow {
+  return {
+    id:String(row.id),createdAt:String(row.activity_at),employeeId:String(row.employee_id),employeeName:String(row.employee_name??"Usuario"),
+    storeId:String(row.store_id),storeName:String(row.store_name??"Tienda"),source:row.source as "scanner"|"evaluation",eventType:row.event_type as DailyActivityRow["eventType"],
+    barcode:String(row.barcode??""),article:String(row.article??""),description:String(row.description??""),color:String(row.color??"No especificado"),
+    size:String(row.size??"No especificado"),expectedSize:String(row.expected_size??""),style:String(row.style??"No especificado"),amount:Number(row.amount??0),
+    brand:String(row.brand??"No especificado"),category:String(row.category??"No especificado"),observation:(row.observation as Observation|null)??null,
+  };
+}
+
+function formatShortDate(value: string) {
+  const [year, month, day] = value.split("-").map(Number);
+  return new Intl.DateTimeFormat("es-VE", { day:"numeric", month:"short", timeZone:"UTC" }).format(new Date(Date.UTC(year, month - 1, day)));
 }
 const GARMENT_BARCODE_FORMATS = [
   BarcodeFormat.EAN_13,
@@ -292,9 +307,14 @@ export default function Home() {
   const [validateSmallestSize, setValidateSmallestSize] = useState(false);
   const [sizeGate, setSizeGate] = useState<SizeGate>(null);
   const [dailyDate, setDailyDate] = useState(()=>dateInputValue());
+  const [dailyStoreId, setDailyStoreId] = useState("");
   const [dailyRows, setDailyRows] = useState<DailyActivityRow[]>([]);
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyError, setDailyError] = useState<string | null>(null);
+  const [showDailyDetail, setShowDailyDetail] = useState(false);
+  const [weeklySummary, setWeeklySummary] = useState<StoreActivitySummary[]>([]);
+  const [weeklyLoading, setWeeklyLoading] = useState(false);
+  const [weeklyError, setWeeklyError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const controlsRef = useRef<IScannerControls | null>(null);
@@ -313,6 +333,8 @@ export default function Home() {
   const isEvaluator = profile?.role === "manager" || profile?.role === "supervisor";
   const isOwner = Boolean(profile?.is_owner);
   const canViewDaily = Boolean(isEvaluator || isOwner);
+  const canViewAllDailyStores = Boolean(isOwner || profile?.role === "supervisor");
+  const dailyVisibleStores = useMemo(()=>canViewAllDailyStores ? stores : stores.filter((store)=>store.id === (profile?.store_id || storeId)),[canViewAllDailyStores,profile?.store_id,storeId,stores]);
   const roleLabel = isOwner ? "Administrador general" : profile ? ROLE_LABELS[profile.role] : "";
   const displayName = profile?.full_name || "Usuario";
   const initials = displayName.split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("") || "GC";
@@ -335,6 +357,7 @@ export default function Home() {
     setStores(nextStores);
     if (nextProfile.role === "supervisor") setStoreId((current)=>nextStores.some((item)=>item.id === current) ? current : (nextStores[0]?.id ?? ""));
     else setStoreId(nextProfile.store_id ?? "");
+    setDailyStoreId(nextProfile.is_owner||nextProfile.role==="supervisor"?"all":(nextProfile.store_id??""));
     setBooting(false);
   }, []);
 
@@ -432,18 +455,33 @@ export default function Home() {
     if(!targetStore)return;
     setDailyLoading(true);
     setDailyError(null);
-    const {data,error}=await supabase.rpc("daily_activity_rows",{target_date:targetDate,target_store:targetStore});
-    if(error){setDailyRows([]);setDailyError("El Registro diario debe activarse en Supabase con el SQL incluido en esta versión.");setDailyLoading(false);return;}
-    const rows=(data??[]) as Array<Record<string,unknown>>;
-    setDailyRows(rows.map((row)=>({
-      id:String(row.id),createdAt:String(row.activity_at),employeeId:String(row.employee_id),employeeName:String(row.employee_name??"Usuario"),
-      storeId:String(row.store_id),storeName:String(row.store_name??"Tienda"),source:row.source as "scanner"|"evaluation",eventType:row.event_type as DailyActivityRow["eventType"],
-      barcode:String(row.barcode??""),article:String(row.article??""),description:String(row.description??""),color:String(row.color??"No especificado"),
-      size:String(row.size??"No especificado"),expectedSize:String(row.expected_size??""),style:String(row.style??"No especificado"),amount:Number(row.amount??0),
-      brand:String(row.brand??"No especificado"),category:String(row.category??"No especificado"),observation:(row.observation as Observation|null)??null,
-    })));
+    const targetStores = targetStore === "all" ? dailyVisibleStores.map((store)=>store.id) : [targetStore];
+    const responses = await Promise.all(targetStores.map((targetStoreId)=>supabase.rpc("daily_activity_rows",{target_date:targetDate,target_store:targetStoreId})));
+    const failed = responses.find((response)=>response.error);
+    if(failed?.error){setDailyRows([]);setDailyError("El Registro diario debe activarse en Supabase con el SQL incluido en esta versión.");setDailyLoading(false);return;}
+    const rows=responses.flatMap((response)=>(response.data??[]) as Array<Record<string,unknown>>).map(dailyRowFromRpc).sort((left,right)=>right.createdAt.localeCompare(left.createdAt));
+    setDailyRows(rows);
     setDailyLoading(false);
-  },[]);
+  },[dailyVisibleStores]);
+
+  const loadWeeklyActivity = useCallback(async (targetDate:string) => {
+    if(!dailyVisibleStores.length)return;
+    setWeeklyLoading(true);
+    setWeeklyError(null);
+    const range=caracasWeekRange(targetDate);
+    const rows:ActivityCountRow[]=[];
+    const pageSize=1000;
+    for(let start=0;;start+=pageSize){
+      let query=supabase.from("scan_activity").select("store_id,event_type,observation,created_at").gte("created_at",range.startIso).lt("created_at",range.endIso).order("created_at",{ascending:false}).range(start,start+pageSize-1);
+      if(!canViewAllDailyStores&&dailyVisibleStores[0]?.id)query=query.eq("store_id",dailyVisibleStores[0].id);
+      const {data,error}=await query;
+      if(error){setWeeklySummary([]);setWeeklyError("No se pudo cargar el resumen semanal.");setWeeklyLoading(false);return;}
+      for(const row of data??[])rows.push({storeId:String(row.store_id),eventType:row.event_type as DailyActivityRow["eventType"],observation:(row.observation as Observation|null)??null});
+      if((data?.length??0)<pageSize)break;
+    }
+    setWeeklySummary(summarizeActivityByStore(rows,dailyVisibleStores));
+    setWeeklyLoading(false);
+  },[canViewAllDailyStores,dailyVisibleStores]);
 
   useEffect(()=>{
     if (!storeId || !sessionUserId) return;
@@ -462,10 +500,13 @@ export default function Home() {
   },[view,isOwner,loadManagedProfiles]);
 
   useEffect(()=>{
-    if(view!=="daily"||!canViewDaily||!storeId)return;
-    const task=window.setTimeout(()=>void loadDailyActivity(dailyDate,storeId),0);
+    if(view!=="daily"||!canViewDaily||!dailyStoreId)return;
+    const task=window.setTimeout(()=>{
+      void loadDailyActivity(dailyDate,dailyStoreId);
+      void loadWeeklyActivity(dailyDate);
+    },0);
     return()=>window.clearTimeout(task);
-  },[view,canViewDaily,dailyDate,storeId,loadDailyActivity]);
+  },[view,canViewDaily,dailyDate,dailyStoreId,loadDailyActivity,loadWeeklyActivity]);
 
   function selectStore(nextStoreId:string){
     stopCamera();
@@ -783,6 +824,11 @@ export default function Home() {
     pending:managedProfiles.filter((item)=>!item.is_active||(item.role!=="supervisor"&&!item.store_id)).length,
   }),[managedProfiles]);
   const dailySummary=useMemo(()=>summarizeDailyActivity(dailyRows),[dailyRows]);
+  const dailyIncidentRows=useMemo(()=>dailyRows.filter(isActivityIncident),[dailyRows]);
+  const displayedDailyRows=showDailyDetail?dailyRows:dailyIncidentRows;
+  const dailyScopeName=dailyStoreId==="all"?"Todas las tiendas":(stores.find((store)=>store.id===dailyStoreId)?.name??currentStore?.name??"Tienda");
+  const weeklyRange=useMemo(()=>caracasWeekRange(dailyDate),[dailyDate]);
+  const weeklyRangeLabel=`${formatShortDate(weeklyRange.startDate)} – ${formatShortDate(new Date(new Date(`${weeklyRange.endDateExclusive}T00:00:00.000Z`).getTime()-86_400_000).toISOString().slice(0,10))}`;
   async function exportEvaluation(){
     const {AlignmentType,BorderStyle,Document,Packer,Paragraph,Table,TableCell,TableRow,TextRun,WidthType}=await import("docx");
     const borders={top:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},bottom:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},left:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"},right:{style:BorderStyle.SINGLE,size:1,color:"B8C7CE"}};const cell=(value:string,bold=false)=>new TableCell({borders,children:[new Paragraph({children:[new TextRun({text:value,bold})]})]});
@@ -813,7 +859,7 @@ export default function Home() {
         <div className="topbar-controls">
           {profile.role==="supervisor"&&view!=="users"?<>
             <div className="desktop-store-switcher"><Select value={storeId} onValueChange={selectStore}><SelectTrigger className="store-select"><Store size={16}/><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((item)=><SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div>
-            <label className="mobile-store-switcher" aria-label="Seleccionar tienda"><Store size={18}/><select value={storeId} onChange={(event)=>selectStore(event.target.value)} aria-label="Seleccionar tienda">{stores.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+            <label className="mobile-store-switcher" aria-label="Seleccionar tienda" title={currentStore?.name}><Store size={18}/><span>{currentStore?.name??"Tienda"}</span><select value={storeId} onChange={(event)=>selectStore(event.target.value)} aria-label="Seleccionar tienda">{stores.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
           </>:<div className="topbar-current-store"><Store size={17}/><span>{currentStore?.name??"Seleccionar tienda"}</span></div>}
         </div>
         <button className="profile-menu-button" onClick={()=>setMobileMenu(true)} type="button" aria-label={`Abrir menú de ${displayName}`}><span>{initials}</span><i/></button>
@@ -822,10 +868,10 @@ export default function Home() {
       {view==="scanner"&&<section className="page-content scanner-layout">
         <div className="scan-panel">
           <div className="section-heading"><div><Badge className="status-badge"><span className={`status-dot ${catalogLoading?"status-dot-loading":""}`}/> {catalogLoading?"Preparando catálogo…":`Lector instantáneo · ${cachedProductCount.toLocaleString("es-ES")} productos`}</Badge><h2>Escaneo continuo</h2><p>Apunta la cámara al código. El resultado aparecerá al instante y el lector seguirá activo.</p></div><div className="store-pill"><Store size={16}/><span>{currentStore?.name}</span></div></div>
-          <div className={`size-validation-control ${validateSmallestSize?"is-active":""}`}><span><Ruler size={19}/></span><div><strong>Validar talla menor</strong><small>Comprueba la talla mínima del mismo artículo y color.</small></div><Switch checked={validateSmallestSize} disabled={Boolean(sizeGate)} onCheckedChange={setValidateSmallestSize} aria-label="Validar talla menor"/></div>
+          <div className={`size-validation-control ${validateSmallestSize?"is-active":""}`}><span><Ruler size={19}/></span><div><strong>Validar talla menor</strong><small>{validateSmallestSize?"Validación activa: el escáner comprobará la talla mínima.":"Comprueba la talla mínima del mismo artículo y color."}</small></div><div className="size-validation-toggle"><b>{validateSmallestSize?"ACTIVA":"INACTIVA"}</b><Switch className="size-validation-switch" checked={validateSmallestSize} disabled={Boolean(sizeGate)} onCheckedChange={setValidateSmallestSize} aria-label="Validar talla menor"/></div></div>
           {cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline/><div className="camera-mode" aria-live="polite"><Camera size={14}/>{cameraStatus}</div><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Cámara principal 1× · EAN, UPC y Code 128</small></button>}
         </div>
-        <div className={`result-panel ${lastProduct?(sizeGate?"result-blocked":""):scanFeedback?"result-missing":"result-empty"}`}>{lastProduct?<><div className="result-success"><CheckCircle2 size={20}/><span>{sizeGate?"Producto identificado · falta validar talla":"Producto encontrado"}</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO DE BARRAS · {lastProduct.barcode}</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div className={sizeGate?"size-alert":""}><span>TALLA</span><strong>{lastProduct.size}</strong>{sizeGate&&<small>Esperada: {sizeGate.expectedSize}</small>}</div><div><span>ESTILO</span><strong>{lastProduct.style}</strong></div><div><span>MARCA</span><strong>{lastProduct.brand}</strong></div><div className="wide"><span>CAT 1</span><strong>{lastProduct.category}</strong></div></div><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div>{sizeGate?<div className="size-gate-card" role="alert"><TriangleAlert size={23}/><div><strong>Escáner pausado por validación de talla</strong><p>Escanea la talla <b>{sizeGate.expectedSize}</b> del mismo artículo y color.</p></div><Button onClick={()=>void registerSmallerSizeNotDisplayed()} variant="outline"><Ruler size={17}/> Talla menor no exhibida</Button></div>:<div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div>}</>:scanFeedback?<div className="missing-product"><div className="missing-head"><Barcode size={21}/><div><strong>Código leído correctamente</strong><span>El lector y la cámara están funcionando</span></div></div><div className="missing-code"><span>CÓDIGO CAPTURADO</span><strong>{scanFeedback.code}</strong></div><div className="missing-copy"><h3>Esta prenda no está en el Excel activo</h3><p>No es posible mostrar artículo, color, talla, estilo ni precio porque el archivo de <strong>{scanFeedback.storeName}</strong> no contiene este código.</p></div><div className="missing-note"><FileSpreadsheet size={20}/><span>Carga el inventario que incluya esta prenda o comprueba que corresponda a la tienda seleccionada.</span></div></div>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div>
+        <div className={`result-panel ${lastProduct?(sizeGate?"result-blocked":""):scanFeedback?"result-missing":"result-empty"}`}>{lastProduct?<><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className="result-success"><CheckCircle2 size={20}/><span>{sizeGate?"Producto identificado · falta validar talla":"Producto encontrado"}</span><small>Último escaneo</small></div><div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO DE BARRAS · {lastProduct.barcode}</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div className={sizeGate?"size-alert":""}><span>TALLA</span><strong>{lastProduct.size}</strong>{sizeGate&&<small>Esperada: {sizeGate.expectedSize}</small>}</div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div>{sizeGate?<div className="size-gate-card" role="alert"><TriangleAlert size={23}/><div><strong>Escáner pausado por validación de talla</strong><p>Escanea la talla <b>{sizeGate.expectedSize}</b> del mismo artículo y color.</p></div><Button onClick={()=>void registerSmallerSizeNotDisplayed()} variant="outline"><Ruler size={17}/> Talla menor no exhibida</Button></div>:<div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div>}</>:scanFeedback?<div className="missing-product"><div className="missing-head"><Barcode size={21}/><div><strong>Código leído correctamente</strong><span>El lector y la cámara están funcionando</span></div></div><div className="missing-code"><span>CÓDIGO CAPTURADO</span><strong>{scanFeedback.code}</strong></div><div className="missing-copy"><h3>Esta prenda no está en el Excel activo</h3><p>No es posible mostrar artículo, color, talla, estilo ni precio porque el archivo de <strong>{scanFeedback.storeName}</strong> no contiene este código.</p></div><div className="missing-note"><FileSpreadsheet size={20}/><span>Carga el inventario que incluya esta prenda o comprueba que corresponda a la tienda seleccionada.</span></div></div>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div>
         <div className="manual-entry scanner-manual"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div>
       </section>}
 
@@ -839,7 +885,7 @@ export default function Home() {
         </div>
         {cameraOpen&&<div className="evaluation-camera"><video ref={videoRef} muted playsInline/><div><strong>{cameraStatus}</strong><span>Los productos se agregan y guardan automáticamente.</span></div><Button variant="outline" onClick={stopCamera}>Detener</Button></div>}
         <div className="incident-panel">
-          <div className="incident-copy"><span>ÚLTIMO PRODUCTO</span>{latestScannedEvaluationItem?<><h3>{latestScannedEvaluationItem.description} · {latestScannedEvaluationItem.article}</h3><div className="evaluation-product-details"><span>Color <b>{latestScannedEvaluationItem.color}</b></span><span>Talla <b>{latestScannedEvaluationItem.size}</b></span><span>Estilo <b>{latestScannedEvaluationItem.style}</b></span><span>Marca <b>{latestScannedEvaluationItem.brand}</b></span><span>Cat 1 <b>{latestScannedEvaluationItem.category}</b></span></div><strong className="incident-price">{money.format(latestScannedEvaluationItem.amount)}</strong><p>Observación del último escaneo</p></>:<p>Escanea un producto para poder marcar una incidencia.</p>}</div>
+          <div className="incident-copy"><span>ÚLTIMO PRODUCTO</span>{latestScannedEvaluationItem?<><h3>{latestScannedEvaluationItem.description} · {latestScannedEvaluationItem.article}</h3><div className="evaluation-product-details"><span>Color <b>{latestScannedEvaluationItem.color}</b></span><span>Talla <b>{latestScannedEvaluationItem.size}</b></span><span>Estilo <b>{latestScannedEvaluationItem.style}</b></span></div><strong className="incident-price">{money.format(latestScannedEvaluationItem.amount)}</strong><p>Observación del último escaneo</p></>:<p>Escanea un producto para poder marcar una incidencia.</p>}</div>
           {latestScannedEvaluationItem&&<div className="incident-selector"><span>Observación</span><Select value={latestScannedEvaluationItem.observation} onValueChange={(value)=>void changeObservation(latestScannedEvaluationItem.rowId,value as Observation)}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></div>}
           <div className="incident-actions">
             <Button className={`incident-button ${latestScannedEvaluationItem?.observation==="PRECIO ERRÓNEO"?"is-active":""}`} variant="outline" disabled={!latestScannedEvaluationItem} aria-pressed={latestScannedEvaluationItem?.observation==="PRECIO ERRÓNEO"} onClick={()=>void markLatestScannedProduct("PRECIO ERRÓNEO")}><CircleDollarSign size={18}/> Precio erróneo</Button>
@@ -851,13 +897,24 @@ export default function Home() {
       </section>}
 
       {view==="daily"&&canViewDaily&&<section className="page-content daily-page">
-        <div className="daily-header"><div><Badge variant="outline"><CalendarDays size={14}/> Control operativo</Badge><h2>Registro diario</h2><p>Actividad de escaneo e incidencias por empleado, Marca y Cat 1.</p></div><div className="daily-filters"><label>Fecha<Input type="date" value={dailyDate} onChange={(event)=>setDailyDate(event.target.value)}/></label><Button variant="outline" onClick={()=>void loadDailyActivity(dailyDate,storeId)} disabled={dailyLoading}><RefreshCw className={dailyLoading?"spin":""} size={17}/> Actualizar</Button></div></div>
+        <div className="daily-header">
+          <div><Badge variant="outline"><CalendarDays size={14}/> Control operativo</Badge><h2>Registro diario</h2><p>Resumen de fallos por tienda, con el detalle completo disponible cuando lo necesites.</p></div>
+          <div className="daily-filters">
+            {canViewAllDailyStores?<label>Tienda<Select value={dailyStoreId} onValueChange={(value)=>{setShowDailyDetail(false);setDailyStoreId(value);}}><SelectTrigger className="daily-store-select"><Store size={16}/><SelectValue/></SelectTrigger><SelectContent><SelectItem value="all">Todas las tiendas</SelectItem>{dailyVisibleStores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select></label>:<label>Tienda<div className="daily-fixed-store"><Store size={16}/><span>{dailyScopeName}</span></div></label>}
+            <label>Fecha<Input type="date" value={dailyDate} onChange={(event)=>{setShowDailyDetail(false);setDailyDate(event.target.value);}}/></label>
+            <Button variant="outline" onClick={()=>{void loadDailyActivity(dailyDate,dailyStoreId);void loadWeeklyActivity(dailyDate);}} disabled={dailyLoading||weeklyLoading}><RefreshCw className={dailyLoading||weeklyLoading?"spin":""} size={17}/> Actualizar</Button>
+          </div>
+        </div>
         {dailyError?<div className="daily-setup"><TriangleAlert size={25}/><div><strong>Registro diario pendiente de activación</strong><p>{dailyError}</p></div></div>:<>
-          <div className="daily-summary-grid"><div><span><ScanLine size={20}/></span><small>ESCANEOS</small><strong>{dailySummary.totalScans}</strong></div><div><span><CircleDollarSign size={20}/></span><small>PRECIO ERRÓNEO</small><strong>{dailySummary.priceErrors}</strong></div><div><span><Tags size={20}/></span><small>MAL ETIQUETADO</small><strong>{dailySummary.mislabeled}</strong></div><div><span><Hand size={20}/></span><small>SIN ETIQUETA</small><strong>{dailySummary.withoutLabel}</strong></div><div><span><Ruler size={20}/></span><small>TALLA MENOR NO EXHIBIDA</small><strong>{dailySummary.smallerSizeNotDisplayed}</strong></div></div>
+          <div className="daily-summary-grid"><div><span><ScanLine size={20}/></span><small>ESCANEOS</small><strong>{dailySummary.totalScans}</strong></div><div className="daily-summary-incidents"><span><TriangleAlert size={20}/></span><small>FALLOS ENCONTRADOS</small><strong>{dailySummary.incidents}</strong></div><div><span><CircleDollarSign size={20}/></span><small>PRECIO ERRÓNEO</small><strong>{dailySummary.priceErrors}</strong></div><div><span><Tags size={20}/></span><small>MAL ETIQUETADO</small><strong>{dailySummary.mislabeled}</strong></div><div><span><Hand size={20}/></span><small>SIN ETIQUETA</small><strong>{dailySummary.withoutLabel}</strong></div><div><span><Ruler size={20}/></span><small>TALLA MENOR NO EXHIBIDA</small><strong>{dailySummary.smallerSizeNotDisplayed}</strong></div></div>
           {dailyLoading?<div className="daily-loading"><LoaderCircle className="spin" size={28}/><span>Cargando actividad del día…</span></div>:<>
+            <div className="daily-detail">
+              <div className="data-card-head daily-detail-head"><div><strong>{showDailyDetail?"Detalle completo del día":"Fallos encontrados"}</strong><span>{showDailyDetail?`${dailyRows.length} registros`:`${dailyIncidentRows.length} incidencias`} · {dailyScopeName}</span></div><div className="daily-detail-actions"><Badge variant="outline">{dailyDate}</Badge><Button variant="outline" onClick={()=>setShowDailyDetail((current)=>!current)}>{showDailyDetail?<EyeOff size={17}/>:<Eye size={17}/>} {showDailyDetail?"Ver solo fallos":"Ver todo detallado"}</Button></div></div>
+              <div className="daily-list">{displayedDailyRows.length?displayedDailyRows.map((row)=><article key={row.id} className={`daily-row daily-row-${row.eventType.toLowerCase()} ${isActivityIncident(row)?"daily-row-incident":""}`}><div className="daily-row-icon">{row.eventType==="SIZE_NOT_DISPLAYED"?<Ruler size={20}/>:<Barcode size={20}/>}</div><div className="daily-row-product"><strong>{row.eventType==="SIZE_NOT_DISPLAYED"?"Talla menor no exhibida":row.description||row.article}</strong><span>{row.article} · {row.color} · talla {row.size}{row.expectedSize?` · esperada ${row.expectedSize}`:""}</span><small>Marca: {row.brand} · Cat 1: {row.category}</small></div><div className="daily-row-person"><strong>{row.employeeName}</strong><span>{row.storeName} · {new Date(row.createdAt).toLocaleTimeString("es-VE",{hour:"numeric",minute:"2-digit"})}</span><small>{row.observation??(row.eventType==="SCAN"?"Sin incidencias":"Validación de talla")}</small></div></article>):<div className="empty-table">{showDailyDetail?"No hay actividad registrada en esta fecha.":"Excelente: no se encontraron fallos en esta fecha."}</div>}</div>
+            </div>
             <div className="daily-groups"><div className="daily-group-card"><h3><Users size={19}/> Por empleado</h3>{dailySummary.byEmployee.length?dailySummary.byEmployee.map((item)=><div key={item.label}><span>{item.label}</span><b>{item.scans} escaneos</b><small>{item.incidents} incidencias</small></div>):<p>Sin actividad para esta fecha.</p>}</div><div className="daily-group-card"><h3><Boxes size={19}/> Por Marca</h3>{dailySummary.byBrand.length?dailySummary.byBrand.map((item)=><div key={item.label}><span>{item.label}</span><b>{item.scans}</b><small>{item.incidents} incidencias</small></div>):<p>Sin datos de Marca.</p>}</div><div className="daily-group-card"><h3><FileSpreadsheet size={19}/> Por Cat 1</h3>{dailySummary.byCategory.length?dailySummary.byCategory.map((item)=><div key={item.label}><span>{item.label}</span><b>{item.scans}</b><small>{item.incidents} incidencias</small></div>):<p>Sin datos de Cat 1.</p>}</div></div>
-            <div className="daily-detail"><div className="data-card-head"><div><strong>Detalle del día</strong><span>{dailyRows.length} registros · {currentStore?.name}</span></div><Badge variant="outline">{dailyDate}</Badge></div><div className="daily-list">{dailyRows.length?dailyRows.map((row)=><article key={row.id} className={`daily-row daily-row-${row.eventType.toLowerCase()}`}><div className="daily-row-icon">{row.eventType==="SIZE_NOT_DISPLAYED"?<Ruler size={20}/>:<Barcode size={20}/>}</div><div className="daily-row-product"><strong>{row.eventType==="SIZE_NOT_DISPLAYED"?"Talla menor no exhibida":row.description||row.article}</strong><span>{row.article} · {row.color} · talla {row.size}{row.expectedSize?` · esperada ${row.expectedSize}`:""}</span><small>{row.brand} · {row.category}</small></div><div className="daily-row-person"><strong>{row.employeeName}</strong><span>{new Date(row.createdAt).toLocaleTimeString("es-VE",{hour:"numeric",minute:"2-digit"})}</span><small>{row.observation??(row.eventType==="SCAN"?"Sin incidencias":"Validación de talla")}</small></div></article>):<div className="empty-table">No hay actividad registrada en esta fecha.</div>}</div></div>
           </>}
+          <div className="weekly-summary-card"><div className="weekly-summary-head"><div><span><CalendarDays size={18}/></span><div><strong>Resumen de la semana</strong><small>{weeklyRangeLabel} · {canViewAllDailyStores?"todas las tiendas":"tienda asignada"}</small></div></div><Badge variant="outline">Semana</Badge></div>{weeklyError?<div className="weekly-error"><TriangleAlert size={18}/>{weeklyError}</div>:weeklyLoading?<div className="weekly-loading"><LoaderCircle className="spin" size={21}/> Calculando semana…</div>:<div className="weekly-store-list"><div className="weekly-store-header"><span>Tienda</span><span>Escaneos</span><span>Fallos</span><span>Precio</span><span>Etiqueta</span><span>Sin etiqueta</span><span>Talla</span></div>{weeklySummary.map((item)=><article key={item.storeId} className="weekly-store-row"><strong>{item.storeName}</strong><span data-label="Escaneos">{item.scans}</span><span className={item.incidents?"has-incidents":""} data-label="Fallos">{item.incidents}</span><span data-label="Precio">{item.priceErrors}</span><span data-label="Etiqueta">{item.mislabeled}</span><span data-label="Sin etiqueta">{item.withoutLabel}</span><span data-label="Talla">{item.smallerSizeNotDisplayed}</span></article>)}</div>}</div>
         </>}
       </section>}
 
