@@ -153,7 +153,8 @@ test("builds a Caracas business week from Monday to Monday", async () => {
 test("keeps scanner latency, camera and PWA safeguards explicit", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const manifest = JSON.parse(await readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"));
-  const worker = await readFile(new URL("../public/sw.js", import.meta.url), "utf8");
+  const worker = await readFile(new URL("../app/sw.js/route.ts", import.meta.url), "utf8");
+  const registration = await readFile(new URL("../app/pwa-register.tsx", import.meta.url), "utf8");
   assert.match(page, /now-lastScanRef\.current\.at<900/);
   assert.match(page, /width: \{ ideal: 1920 \}/);
   assert.match(page, /track\.contentHint="detail"/);
@@ -164,6 +165,13 @@ test("keeps scanner latency, camera and PWA safeguards explicit", async () => {
   assert.equal(manifest.display, "standalone");
   assert.ok(manifest.icons.some((icon) => icon.sizes === "512x512"));
   assert.doesNotMatch(worker, /cache\.put|caches\.open/);
+  assert.match(worker, /VERCEL_GIT_COMMIT_SHA/);
+  assert.match(worker, /client\.navigate\(client\.url\)/);
+  assert.match(worker, /cache: "no-store"/);
+  assert.match(worker, /Vercel-CDN-Cache-Control/);
+  assert.match(registration, /updateViaCache: "none"/);
+  assert.match(registration, /registration\.update\(\)/);
+  assert.match(registration, /controllerchange/);
 });
 
 test("provides an external installation page with share and device guidance", async () => {
