@@ -203,16 +203,18 @@ test("keeps public registration store-bound and always employee-controlled", asy
   assert.match(migration, /is_owner\s*=\s*false/);
 });
 
-test("reserves cross-store user administration and reporting for Romer", async () => {
+test("reserves user administration for Romer and cross-store work for managers", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const migration = await readFile(new URL("../SUPABASE_CAMBIOS_PRIORITARIOS.sql", import.meta.url), "utf8");
 
-  assert.match(page, /const canViewAllDailyStores = isOwner/);
+  assert.match(page, /const canSwitchStores = Boolean\(isOwner \|\| profile\?\.role === "manager"\)/);
+  assert.match(page, /const canViewAllDailyStores = canSwitchStores/);
   assert.match(page, /supabase\.rpc\("owner_update_user"/);
-  assert.doesNotMatch(page, /profile\?\.role === "supervisor" \? stores/);
+  assert.doesNotMatch(page, /canSwitchStores = Boolean\([^\n]*supervisor/);
   assert.match(migration, /if not public\.current_user_is_owner\(\) then/);
-  assert.match(migration, /not coalesce\(requester\.is_owner, false\) and target_store is distinct from requester\.store_id/);
-  assert.match(migration, /p\.store_id = target_store and p\.role::text in \('manager', 'supervisor'\)/);
+  assert.match(migration, /p\.role::text = 'manager'/);
+  assert.match(migration, /p\.store_id = target_store and p\.role::text = 'supervisor'/);
+  assert.match(migration, /requester\.role::text <> 'manager'/);
 });
 
 test("blocks every unrelated barcode until the exact minimum size is scanned", async () => {

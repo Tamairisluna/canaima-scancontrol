@@ -420,8 +420,9 @@ export default function Home() {
   const currentStore = stores.find((item)=>item.id === storeId) ?? null;
   const isEvaluator = profile?.role === "manager" || profile?.role === "supervisor";
   const isOwner = Boolean(profile?.is_owner);
+  const canSwitchStores = Boolean(isOwner || profile?.role === "manager");
   const canViewDaily = Boolean(isEvaluator || isOwner);
-  const canViewAllDailyStores = isOwner;
+  const canViewAllDailyStores = canSwitchStores;
   const dailyVisibleStores = useMemo(()=>canViewAllDailyStores ? stores : stores.filter((store)=>store.id === (profile?.store_id || storeId)),[canViewAllDailyStores,profile?.store_id,storeId,stores]);
   const roleLabel = isOwner ? "Administrador general" : profile ? ROLE_LABELS[profile.role] : "";
   const displayName = profile?.full_name || "Usuario";
@@ -443,9 +444,9 @@ export default function Home() {
     const { data: storeData } = await storesRequest;
     const nextStores = (storeData ?? []) as StoreRecord[];
     setStores(nextStores);
-    if (nextProfile.is_owner) setStoreId((current)=>nextStores.some((item)=>item.id === current) ? current : (nextProfile.store_id??nextStores[0]?.id??""));
+    if (nextProfile.is_owner || nextProfile.role === "manager") setStoreId((current)=>nextStores.some((item)=>item.id === current) ? current : (nextProfile.store_id??nextStores[0]?.id??""));
     else setStoreId(nextProfile.store_id ?? "");
-    setDailyStoreId(nextProfile.is_owner?"all":(nextProfile.store_id??""));
+    setDailyStoreId(nextProfile.is_owner || nextProfile.role === "manager"?"all":(nextProfile.store_id??""));
     setBooting(false);
   }, []);
 
@@ -993,7 +994,7 @@ export default function Home() {
           <strong>ScanControl</strong>
         </div>
         <div className="topbar-controls">
-          {isOwner&&view!=="users"?<>
+          {canSwitchStores&&view!=="users"?<>
             <div className="desktop-store-switcher"><Select value={storeId} onValueChange={selectStore}><SelectTrigger className="store-select"><Store size={16}/><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((item)=><SelectItem key={item.id} value={item.id}>{item.name}</SelectItem>)}</SelectContent></Select></div>
             <label className="mobile-store-switcher" aria-label="Seleccionar tienda" title={currentStore?.name}><Store size={18}/><span>{currentStore?.name??"Tienda"}</span><select value={storeId} onChange={(event)=>selectStore(event.target.value)} aria-label="Seleccionar tienda">{stores.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
           </>:<div className="topbar-current-store"><Store size={17}/><span>{currentStore?.name??"Seleccionar tienda"}</span></div>}
