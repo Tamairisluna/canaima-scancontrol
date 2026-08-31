@@ -718,7 +718,21 @@ export default function Home() {
       const {data:version,error:versionError}=await supabase.from("catalog_versions").insert({store_id:storeId,file_name:file.name,row_count:0,status:"uploading",uploaded_by:sessionUserId}).select("id").single();
       if(versionError)throw versionError;catalogId=version.id;
       const batchSize=400;
-      for(let start=0;start<products.length;start+=batchSize){const batch=products.slice(start,start+batchSize).map((product)=>({...product,catalog_id:catalogId,store_id:storeId}));const {error}=await supabase.from("products").insert(batch);if(error)throw error;setUploading({stage:"uploading",fileName,done:Math.min(start+batch.length,products.length),total:products.length});}
+      for(let start=0;start<products.length;start+=batchSize){
+        const batch=products.slice(start,start+batchSize).map((product)=>({...product,catalog_id:catalogId,store_id:storeId}));
+        let {error}=await supabase.from("products").insert(batch);
+        if(error&&/(brand|category)/i.test(error.message)){
+          const compatibleBatch=batch.map((product)=>{
+            const compatibleProduct={...product} as Partial<typeof product>;
+            delete compatibleProduct.brand;
+            delete compatibleProduct.category;
+            return compatibleProduct;
+          });
+          ({error}=await supabase.from("products").insert(compatibleBatch));
+        }
+        if(error)throw error;
+        setUploading({stage:"uploading",fileName,done:Math.min(start+batch.length,products.length),total:products.length});
+      }
       const {error:readyError}=await supabase.from("catalog_versions").update({status:"ready",row_count:products.length}).eq("id",catalogId);if(readyError)throw readyError;
       setUploading({stage:"activating",fileName,done:products.length,total:products.length});
       const {error:activateError}=await supabase.rpc("activate_catalog",{target_catalog:catalogId});if(activateError)throw activateError;
