@@ -159,7 +159,7 @@ test("keeps scanner latency, camera and PWA safeguards explicit", async () => {
   assert.match(page, /track\.contentHint="detail"/);
   assert.match(page, /focusMode:"single-shot"/);
   assert.match(page, /focusMode:"continuous"/);
-  assert.match(page, /resizeMode:\{ideal:"none"\}/);
+  assert.match(page, /facingMode: \{ ideal: "environment" \}/);
   assert.match(page, /navigator\.vibrate\(80\)/);
   assert.equal(manifest.display, "standalone");
   assert.ok(manifest.icons.some((icon) => icon.sizes === "512x512"));
