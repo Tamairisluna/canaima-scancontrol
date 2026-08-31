@@ -139,3 +139,13 @@ test("keeps scanner latency, camera and PWA safeguards explicit", async () => {
   assert.ok(manifest.icons.some((icon) => icon.sizes === "512x512"));
   assert.doesNotMatch(worker, /cache\.put|caches\.open/);
 });
+
+test("provides an external installation page with share and device guidance", async () => {
+  const installer = await readFile(new URL("../app/instalar/install-page-client.tsx", import.meta.url), "utf8");
+  const qr = await readFile(new URL("../public/scancontrol-install-qr.png", import.meta.url));
+  assert.match(installer, /canaima-scancontrol\.vercel\.app\/instalar/);
+  assert.match(installer, /beforeinstallprompt/);
+  assert.match(installer, /Agregar a pantalla de inicio/);
+  assert.match(installer, /navigator\.share/);
+  assert.ok(qr.length > 1000);
+});
