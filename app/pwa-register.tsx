@@ -49,9 +49,7 @@ export function PwaRegister() {
       if (pendingRefresh) {
         pendingRefresh = false;
         reloadWithNewWorker();
-        return;
       }
-      void checkForUpdate();
     };
 
     const releaseCancelledPicker = () => {
@@ -68,11 +66,9 @@ export function PwaRegister() {
     const onVisibilityChange = () => {
       if (document.visibilityState !== "visible") return;
       if (fileActivity() === "picking") releaseCancelledPicker();
-      else finishDeferredUpdate();
     };
     const onPageShow = () => {
       if (fileActivity() === "picking") releaseCancelledPicker();
-      else finishDeferredUpdate();
     };
     const onFileActivity = () => {
       if (!fileActivity()) finishDeferredUpdate();

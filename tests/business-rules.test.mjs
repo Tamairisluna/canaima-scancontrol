@@ -176,6 +176,7 @@ test("keeps scanner latency, camera and PWA safeguards explicit", async () => {
   assert.match(registration, /data-scancontrol-file-activity/);
   assert.match(registration, /pendingRefresh/);
   assert.match(registration, /fileActivity\(\)/);
+  assert.doesNotMatch(registration, /onPageShow.*checkForUpdate/);
 });
 
 test("provides an external installation page with share and device guidance", async () => {
@@ -205,6 +206,8 @@ test("keeps the selected Excel alive until the mobile import finishes", async ()
   assert.match(page, /setExcelFileActivity\("picking"\)/);
   assert.match(importer, /setExcelFileActivity\("importing"\)/);
   assert.match(importer, /finally\{setUploading\(null\);setExcelFileActivity\(null\);\}/);
+  assert.match(page, /accept="\.xlsx,\.xls"/);
+  assert.match(page, /onInput=\{handleExcelSelection\}/);
   assert.match(page, /onChange=\{handleExcelSelection\}/);
 });
 
