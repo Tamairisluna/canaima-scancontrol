@@ -168,6 +168,7 @@ test("keeps scanner latency, camera and PWA safeguards explicit", async () => {
   assert.match(worker, /VERCEL_GIT_COMMIT_SHA/);
   assert.doesNotMatch(worker, /client\.navigate\(client\.url\)/);
   assert.match(worker, /Nunca recargamos un cliente abierto/);
+  assert.doesNotMatch(worker, /self\.skipWaiting\(\)/);
   assert.match(worker, /cache: "no-store"/);
   assert.match(worker, /Vercel-CDN-Cache-Control/);
   assert.match(registration, /updateViaCache: "none"/);
@@ -192,7 +193,7 @@ test("provides an external installation page with share and device guidance", as
 
 test("keeps the selected Excel alive until the mobile import finishes", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const handlerStart = page.indexOf("function handleExcelSelection");
+  const handlerStart = page.indexOf("function consumeExcelInput");
   const importerStart = page.indexOf("async function importExcel");
   const handler = page.slice(handlerStart, importerStart);
 
@@ -213,6 +214,12 @@ test("keeps the selected Excel alive until the mobile import finishes", async ()
   assert.match(page, /aria-label="Seleccionar archivo Excel"/);
   assert.match(page, /onInput=\{handleExcelSelection\}/);
   assert.match(page, /onChange=\{handleExcelSelection\}/);
+  assert.doesNotMatch(page, /event\.currentTarget\.value=""/);
+  assert.match(page, /input\.addEventListener\("change",receiveNativeFile\)/);
+  assert.match(page, /window\.addEventListener\("focus",recoverReturnedFile\)/);
+  assert.match(page, /window\.addEventListener\("pageshow",recoverReturnedFile\)/);
+  assert.match(page, /document\.addEventListener\("visibilitychange",onVisibilityChange\)/);
+  assert.match(page, /for\(const delay of \[0,120,400,900\]\)/);
 });
 
 test("never reloads the app while Android is returning a selected file", async () => {
@@ -221,6 +228,8 @@ test("never reloads the app while Android is returning a selected file", async (
 
   assert.doesNotMatch(register, /window\.location\.reload/);
   assert.doesNotMatch(register, /controllerchange/);
+  const worker = await readFile(new URL("../app/sw.js/route.ts", import.meta.url), "utf8");
+  assert.doesNotMatch(worker, /self\.skipWaiting\(\)/);
   assert.match(styles, /\.upload-card \.upload-native-picker input\{/);
   assert.match(styles, /display:block/);
   assert.match(styles, /opacity:0/);

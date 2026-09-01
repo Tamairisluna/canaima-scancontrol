@@ -12,8 +12,11 @@ export function GET() {
 const APP_VERSION = ${JSON.stringify(deploymentVersion)};
 const CACHE_PREFIX = "canaima-scancontrol-";
 
-self.addEventListener("install", (event) => {
-  event.waitUntil(self.skipWaiting());
+self.addEventListener("install", () => {
+  // No activamos una versión nueva encima de una app abierta. En Android,
+  // controllerchange puede reiniciar la PWA justo cuando el proveedor de
+  // documentos devuelve el Excel y el FileList se pierde. El navegador
+  // activará esta versión cuando se cierre la instancia anterior.
 });
 
 self.addEventListener("activate", (event) => {
@@ -33,10 +36,6 @@ self.addEventListener("activate", (event) => {
       client.postMessage({ type: "SCANCONTROL_UPDATED", version: APP_VERSION });
     });
   })());
-});
-
-self.addEventListener("message", (event) => {
-  if (event.data?.type === "SKIP_WAITING") self.skipWaiting();
 });
 
 self.addEventListener("fetch", (event) => {
