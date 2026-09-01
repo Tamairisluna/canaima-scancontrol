@@ -166,12 +166,16 @@ test("keeps scanner latency, camera and PWA safeguards explicit", async () => {
   assert.ok(manifest.icons.some((icon) => icon.sizes === "512x512"));
   assert.doesNotMatch(worker, /cache\.put|caches\.open/);
   assert.match(worker, /VERCEL_GIT_COMMIT_SHA/);
-  assert.match(worker, /client\.navigate\(client\.url\)/);
+  assert.doesNotMatch(worker, /client\.navigate\(client\.url\)/);
+  assert.match(worker, /cliente decide cuándo recargar/);
   assert.match(worker, /cache: "no-store"/);
   assert.match(worker, /Vercel-CDN-Cache-Control/);
   assert.match(registration, /updateViaCache: "none"/);
   assert.match(registration, /registration\.update\(\)/);
   assert.match(registration, /controllerchange/);
+  assert.match(registration, /data-scancontrol-file-activity/);
+  assert.match(registration, /pendingRefresh/);
+  assert.match(registration, /fileActivity\(\)/);
 });
 
 test("provides an external installation page with share and device guidance", async () => {
@@ -198,7 +202,9 @@ test("keeps the selected Excel alive until the mobile import finishes", async ()
   assert.match(page, /const fileBytesPromise=file\.arrayBuffer\(\)/);
   const importer = page.slice(importerStart, page.indexOf("const uploadPercent", importerStart));
   assert.ok(importer.indexOf("const fileBytesPromise=file.arrayBuffer()") < importer.indexOf("requestAnimationFrame"));
-  assert.match(page, /onClick=\{\(event\)=>\{event\.currentTarget\.value="";\}\} onChange=\{handleExcelSelection\}/);
+  assert.match(page, /setExcelFileActivity\("picking"\)/);
+  assert.match(importer, /setExcelFileActivity\("importing"\)/);
+  assert.match(importer, /finally\{setUploading\(null\);setExcelFileActivity\(null\);\}/);
   assert.match(page, /onChange=\{handleExcelSelection\}/);
 });
 

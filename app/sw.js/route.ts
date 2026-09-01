@@ -26,17 +26,12 @@ self.addEventListener("activate", (event) => {
     );
     await self.clients.claim();
 
-    // Una activación equivale a una publicación nueva. La navegación obliga
-    // a las apps ya instaladas a tomar el HTML y los bundles actuales.
+    // El cliente decide cuándo recargar. Así una actualización nunca destruye
+    // un archivo que Android acaba de devolver desde su selector nativo.
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
-    await Promise.all(windows.map(async (client) => {
+    windows.forEach((client) => {
       client.postMessage({ type: "SCANCONTROL_UPDATED", version: APP_VERSION });
-      try {
-        await client.navigate(client.url);
-      } catch {
-        // controllerchange en el cliente conserva el respaldo de recarga.
-      }
-    }));
+    });
   })());
 });
 
