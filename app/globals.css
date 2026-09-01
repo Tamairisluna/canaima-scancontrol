@@ -1509,3 +1509,9 @@ html.login-active,html.login-active body{background:#061b31}
   .topbar{grid-template-columns:minmax(102px,1fr) auto 38px;padding-inline:9px;gap:6px}.topbar-brand img{width:46px;height:31px}.topbar-brand strong{font-size:14px}.topbar-current-store,.topbar .store-select{width:min(142px,38vw)!important;padding-inline:8px!important}.profile-menu-button{width:38px;height:38px}
   .scanner-target,.camera-stage{height:290px}.scanner-icon{width:46px;height:48px;bottom:51px;transform:translateX(-118px)}.scanner-target strong{bottom:51px;min-width:236px;min-height:48px;padding-left:55px;font-size:13px}.scanner-target small{font-size:8px}
 }
+
+/* El input nativo recibe directamente el toque. Android puede perder la
+   devolución del archivo cuando se abre mediante .click() desde un botón. */
+.upload-native-picker{position:relative;display:inline-flex;align-items:center;justify-content:center;overflow:hidden;cursor:pointer}
+.upload-native-picker>span{max-width:none;margin:0;color:inherit;font-size:inherit;line-height:1}
+.upload-card .upload-native-picker input{position:absolute;z-index:2;inset:0;display:block;width:100%;height:100%;margin:0;padding:0;opacity:0;cursor:pointer}

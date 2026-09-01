@@ -167,14 +167,15 @@ test("keeps scanner latency, camera and PWA safeguards explicit", async () => {
   assert.doesNotMatch(worker, /cache\.put|caches\.open/);
   assert.match(worker, /VERCEL_GIT_COMMIT_SHA/);
   assert.doesNotMatch(worker, /client\.navigate\(client\.url\)/);
-  assert.match(worker, /cliente decide cuándo recargar/);
+  assert.match(worker, /Nunca recargamos un cliente abierto/);
   assert.match(worker, /cache: "no-store"/);
   assert.match(worker, /Vercel-CDN-Cache-Control/);
   assert.match(registration, /updateViaCache: "none"/);
   assert.match(registration, /registration\.update\(\)/);
-  assert.match(registration, /controllerchange/);
+  assert.doesNotMatch(registration, /controllerchange/);
   assert.match(registration, /data-scancontrol-file-activity/);
-  assert.match(registration, /pendingRefresh/);
+  assert.doesNotMatch(registration, /pendingRefresh/);
+  assert.doesNotMatch(registration, /window\.location\.reload/);
   assert.match(registration, /fileActivity\(\)/);
   assert.doesNotMatch(registration, /onPageShow.*checkForUpdate/);
 });
@@ -206,9 +207,23 @@ test("keeps the selected Excel alive until the mobile import finishes", async ()
   assert.match(page, /setExcelFileActivity\("picking"\)/);
   assert.match(importer, /setExcelFileActivity\("importing"\)/);
   assert.match(importer, /finally\{setUploading\(null\);setExcelFileActivity\(null\);\}/);
-  assert.match(page, /accept="\.xlsx,\.xls"/);
+  assert.doesNotMatch(page, /accept="\.xlsx,\.xls"/);
+  assert.doesNotMatch(page, /fileInputRef\.current\?\.click\(\)/);
+  assert.match(page, /className="upload-select-button upload-native-picker"/);
+  assert.match(page, /aria-label="Seleccionar archivo Excel"/);
   assert.match(page, /onInput=\{handleExcelSelection\}/);
   assert.match(page, /onChange=\{handleExcelSelection\}/);
+});
+
+test("never reloads the app while Android is returning a selected file", async () => {
+  const register = await readFile(new URL("../app/pwa-register.tsx", import.meta.url), "utf8");
+  const styles = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+
+  assert.doesNotMatch(register, /window\.location\.reload/);
+  assert.doesNotMatch(register, /controllerchange/);
+  assert.match(styles, /\.upload-card \.upload-native-picker input\{/);
+  assert.match(styles, /display:block/);
+  assert.match(styles, /opacity:0/);
 });
 
 test("keeps public registration store-bound and always employee-controlled", async () => {

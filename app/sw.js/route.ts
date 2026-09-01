@@ -26,8 +26,8 @@ self.addEventListener("activate", (event) => {
     );
     await self.clients.claim();
 
-    // El cliente decide cuándo recargar. Así una actualización nunca destruye
-    // un archivo que Android acaba de devolver desde su selector nativo.
+    // Nunca recargamos un cliente abierto. La siguiente apertura obtiene el
+    // HTML nuevo sin destruir un archivo devuelto por el selector de Android.
     const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
     windows.forEach((client) => {
       client.postMessage({ type: "SCANCONTROL_UPDATED", version: APP_VERSION });
