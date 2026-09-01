@@ -196,6 +196,9 @@ test("keeps the selected Excel alive until the mobile import finishes", async ()
   assert.doesNotMatch(handler, /event\.currentTarget\.value=""/);
   assert.ok(handler.indexOf("importExcel(file).finally") < handler.indexOf("fileInputRef.current===input"));
   assert.match(page, /const fileBytesPromise=file\.arrayBuffer\(\)/);
+  const importer = page.slice(importerStart, page.indexOf("const uploadPercent", importerStart));
+  assert.ok(importer.indexOf("const fileBytesPromise=file.arrayBuffer()") < importer.indexOf("requestAnimationFrame"));
+  assert.match(page, /onClick=\{\(event\)=>\{event\.currentTarget\.value="";\}\} onChange=\{handleExcelSelection\}/);
   assert.match(page, /onChange=\{handleExcelSelection\}/);
 });
 
