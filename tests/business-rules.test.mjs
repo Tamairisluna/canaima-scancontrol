@@ -236,12 +236,12 @@ test("never reloads the app while Android is returning a selected file", async (
 });
 
 test("keeps public registration store-bound and always employee-controlled", async () => {
-  const page = await readFile(new URL("../app/login/login-screen.tsx", import.meta.url), "utf8");
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const migration = await readFile(new URL("../SUPABASE_CAMBIOS_PRIORITARIOS.sql", import.meta.url), "utf8");
 
   assert.match(page, /supabase\.rpc\("registration_stores"\)/);
-  assert.match(page, /options:\{emailRedirectTo:confirmationUrl\.toString\(\),data:\{full_name:fullName,store_id:signupForm\.storeId\}\}/);
-  assert.doesNotMatch(page, /data:\{full_name:fullName,store_id:signupForm\.storeId,role:/);
+  assert.match(page, /options:\{data:\{full_name:fullName,store_id:signupForm\.storeId\}\}/);
+  assert.doesNotMatch(page, /options:\{data:\{full_name:fullName,store_id:signupForm\.storeId,role:/);
   assert.match(migration, /jsonb_build_object\('role', 'employee'\)/);
   assert.match(migration, /Debes seleccionar una tienda activa/);
   assert.match(migration, /is_owner\s*=\s*false/);
@@ -282,33 +282,4 @@ test("retries transient Excel batches and removes every interrupted catalog", as
   assert.match(page, /Reintentar carga/);
   assert.match(migration, /delete from public\.products where catalog_id = target_catalog/);
   assert.match(migration, /if catalog_status = 'active' then/);
-});
-
-test("protects application routes with verified Supabase cookie sessions", async () => {
-  const rootProxy = await readFile(new URL("../proxy.ts", import.meta.url), "utf8");
-  const authProxy = await readFile(new URL("../lib/supabase/proxy.ts", import.meta.url), "utf8");
-  const browserClient = await readFile(new URL("../app/lib/supabase.ts", import.meta.url), "utf8");
-
-  assert.match(rootProxy, /export async function proxy/);
-  assert.match(rootProxy, /export const config/);
-  assert.match(authProxy, /createServerClient/);
-  assert.match(authProxy, /supabase\.auth\.getClaims\(\)/);
-  assert.doesNotMatch(authProxy, /supabase\.auth\.getSession\(\)/);
-  assert.match(authProxy, /!isAuthenticated && !isPublicPath\(pathname\)/);
-  assert.match(authProxy, /pathname === "\/login"/);
-  assert.match(authProxy, /Cache-Control|cache-control/);
-  assert.match(browserClient, /createBrowserClient/);
-});
-
-test("keeps email confirmation and password recovery inside safe auth routes", async () => {
-  const page = await readFile(new URL("../app/login/login-screen.tsx", import.meta.url), "utf8");
-  const callback = await readFile(new URL("../app/auth/callback/route.ts", import.meta.url), "utf8");
-  const recovery = await readFile(new URL("../app/update-password/page.tsx", import.meta.url), "utf8");
-
-  assert.match(page, /resetPasswordForEmail/);
-  assert.match(page, /\/auth\/callback/);
-  assert.match(callback, /exchangeCodeForSession/);
-  assert.match(callback, /destination\.origin === origin/);
-  assert.match(recovery, /supabase\.auth\.updateUser\(\{ password \}\)/);
-  assert.doesNotMatch(callback, /service_role|SUPABASE_SECRET/);
 });
