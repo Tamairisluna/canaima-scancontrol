@@ -263,12 +263,16 @@ test("reserves user administration for Romer and cross-store work for supervisor
 
 test("blocks every unrelated barcode until the exact minimum size is scanned", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const requiredMessage = "Debes escanear primero la talla mínima ${sizeGate.expectedSize} para continuar.";
+  const requiredMessage = "Debes escanear primero la talla mínima ${activeSizeGate.expectedSize} para continuar.";
 
   assert.equal(page.split(requiredMessage).length - 1, 2);
-  assert.match(page, /if\(sizeGate&&!evaluation\).*return void toast\.warning/);
-  assert.match(page, /matchesExpectedMinimum\(product,sizeGate\.product,sizeGate\.expectedSize\)/);
-  assert.ok(page.indexOf("if(sizeGate&&!evaluation)") < page.indexOf("void logActivity(product)"));
+  assert.match(page, /const sizeGateRef = useRef<SizeGate>\(null\)/);
+  assert.match(page, /const activeSizeGate=sizeGateRef\.current/);
+  assert.match(page, /if\(activeSizeGate&&!evaluation\).*return void toast\.warning/);
+  assert.match(page, /matchesExpectedMinimum\(product,activeSizeGate\.product,activeSizeGate\.expectedSize\)/);
+  assert.match(page, /sizeGateRef\.current=nextGate;\s*setSizeGate\(nextGate\)/);
+  assert.doesNotMatch(page, /\[storeId,currentStore\?\.name,lookupProduct,sizeGate,/);
+  assert.ok(page.indexOf("if(activeSizeGate&&!evaluation)") < page.indexOf("void logActivity(product)"));
 });
 
 test("retries transient Excel batches and removes every interrupted catalog", async () => {

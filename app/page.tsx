@@ -425,6 +425,12 @@ export default function Home() {
   const productCacheStoreRef = useRef("");
   const productCacheReadyRef = useRef(false);
   const activeCatalogIdRef = useRef("");
+  const sizeGateRef = useRef<SizeGate>(null);
+
+  const updateSizeGate = useCallback((nextGate:SizeGate) => {
+    sizeGateRef.current=nextGate;
+    setSizeGate(nextGate);
+  },[]);
 
   const currentStore = stores.find((item)=>item.id === storeId) ?? null;
   const isEvaluator = profile?.role === "manager" || profile?.role === "supervisor";
@@ -662,7 +668,7 @@ export default function Home() {
     stopCamera();
     setLastProduct(null);
     setScanFeedback(null);
-    setSizeGate(null);
+    updateSizeGate(null);
     setCatalogMeta(null);
     setCachedProductCount(0);
     productCacheReadyRef.current=false;
@@ -779,8 +785,12 @@ export default function Home() {
     const normalized=normalizeBarcode(rawCode);
     if (!normalized) return;
     const product=await lookupProduct(normalized);
+    // El decodificador de la cámara permanece abierto entre renders. La ref
+    // garantiza que cada lectura consulte el bloqueo vigente, no el valor que
+    // existía cuando se inició la sesión continua de cámara.
+    const activeSizeGate=sizeGateRef.current;
     if (!product) {
-      if(sizeGate&&!evaluation){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Debes escanear primero la talla mínima ${sizeGate.expectedSize} para continuar.`});}
+      if(activeSizeGate&&!evaluation){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Debes escanear primero la talla mínima ${activeSizeGate.expectedSize} para continuar.`});}
       const storeName=currentStore?.name??"esta tienda";
       setLastProduct(null);
       setScanFeedback({code:normalized,storeName});
@@ -789,10 +799,10 @@ export default function Home() {
       return void toast.warning("Código leído correctamente",{id:"scanner-result",description:`${normalized} no está incluido en el Excel activo de ${storeName}.`});
     }
 
-    if(sizeGate&&!evaluation){
-      if(!matchesExpectedMinimum(product,sizeGate.product,sizeGate.expectedSize)){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Debes escanear primero la talla mínima ${sizeGate.expectedSize} para continuar.`});}
-      setSizeGate(null);setScanFeedback(null);setLastProduct(product);setManualCode("");toast.dismiss("size-gate");if(navigator.vibrate)navigator.vibrate(80);
-      void logActivity(product);void logActivity(product,{eventType:"SIZE_RESOLVED",expectedSize:sizeGate.expectedSize});
+    if(activeSizeGate&&!evaluation){
+      if(!matchesExpectedMinimum(product,activeSizeGate.product,activeSizeGate.expectedSize)){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Debes escanear primero la talla mínima ${activeSizeGate.expectedSize} para continuar.`});}
+      updateSizeGate(null);setScanFeedback(null);setLastProduct(product);setManualCode("");toast.dismiss("size-gate");if(navigator.vibrate)navigator.vibrate(80);
+      void logActivity(product);void logActivity(product,{eventType:"SIZE_RESOLVED",expectedSize:activeSizeGate.expectedSize});
       return void toast.success("Talla menor validada",{description:`${product.article} · talla ${product.size}`});
     }
 
@@ -800,7 +810,7 @@ export default function Home() {
     if(!evaluation&&validateSmallestSize){
       const validation=findMinimumSize(product,productCacheRef.current.values());
       if(validation.status==="not-minimum"){
-        setSizeGate({product,expectedSize:validation.expectedSize});
+        updateSizeGate({product,expectedSize:validation.expectedSize});
         if(navigator.vibrate)navigator.vibrate([70,60,70]);
         void logActivity(product);
         return void toast.warning("Talla menor requerida",{id:"size-gate",description:`La talla esperada para ${product.article} · ${product.color} es ${validation.expectedSize}.`});
@@ -810,7 +820,7 @@ export default function Home() {
     if(navigator.vibrate)navigator.vibrate(80);
     if(evaluation)void saveEvaluationProduct(product);else void logActivity(product);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  },[storeId,currentStore?.name,lookupProduct,sizeGate,validateSmallestSize,isEvaluator,sessionUserId]);
+  },[storeId,currentStore?.name,lookupProduct,validateSmallestSize,isEvaluator,sessionUserId,updateSizeGate]);
 
   function releaseCameraStream(){
     controlsRef.current?.stop();
@@ -880,10 +890,11 @@ export default function Home() {
   function goTo(next:View){if(next==="daily"&&!canViewDaily)return;if(next==="users"&&!isOwner)return;stopCamera();setView(next);setMobileMenu(false);}
 
   async function registerSmallerSizeNotDisplayed(){
-    if(!sizeGate)return;
-    await logActivity(sizeGate.product,{eventType:"SIZE_NOT_DISPLAYED",expectedSize:sizeGate.expectedSize});
-    const article=sizeGate.product.article;
-    setSizeGate(null);toast.dismiss("size-gate");if(navigator.vibrate)navigator.vibrate(80);
+    const activeSizeGate=sizeGateRef.current;
+    if(!activeSizeGate)return;
+    await logActivity(activeSizeGate.product,{eventType:"SIZE_NOT_DISPLAYED",expectedSize:activeSizeGate.expectedSize});
+    const article=activeSizeGate.product.article;
+    updateSizeGate(null);toast.dismiss("size-gate");if(navigator.vibrate)navigator.vibrate(80);
     toast.success("Incidencia registrada",{description:`${article}: talla menor no exhibida.`});
   }
 
@@ -974,7 +985,7 @@ export default function Home() {
       const {error:activateError}=await supabase.rpc("activate_catalog",{target_catalog:catalogId});if(activateError)throw activateError;
       setUploading({stage:"caching",fileName,done:products.length,total:products.length});
       await Promise.all([loadCatalogMeta(targetStoreId),loadProductCache(targetStoreId)]);
-      setSizeGate(null);
+      updateSizeGate(null);
       setLastProduct(null);
       setScanFeedback(null);
       toast.dismiss("size-gate");
