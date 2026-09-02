@@ -102,7 +102,7 @@ as $$
       and p.is_active = true
       and (
         coalesce(p.is_owner, false)
-        or p.role::text = 'manager'
+        or p.role::text = 'supervisor'
         or p.store_id = target_store
       )
   );
@@ -121,8 +121,8 @@ as $$
       and p.is_active = true
       and (
         coalesce(p.is_owner, false)
-        or p.role::text = 'manager'
-        or (p.store_id = target_store and p.role::text = 'supervisor')
+        or p.role::text = 'supervisor'
+        or (p.store_id = target_store and p.role::text = 'manager')
       )
   );
 $$;
@@ -353,7 +353,7 @@ create policy scan_activity_delete_own on public.scan_activity
 for delete to authenticated
 using (user_id = auth.uid() and public.current_user_can_access_store(store_id));
 
--- Los gerentes consultan todas las tiendas; supervisores solo su tienda; Romer conserva control total.
+-- Los supervisores consultan todas las tiendas; gerentes solo su tienda; Romer conserva control total.
 create or replace function public.daily_activity_rows(target_date date, target_store uuid)
 returns table (
   id uuid, activity_at timestamptz, employee_id uuid, employee_name text,
@@ -374,7 +374,7 @@ begin
     raise exception 'Acceso reservado para gerentes, supervisores y Romer';
   end if;
   if not coalesce(requester.is_owner, false)
-     and requester.role::text <> 'manager'
+     and requester.role::text <> 'supervisor'
      and target_store is distinct from requester.store_id then
     raise exception 'Solo puedes consultar tu tienda asignada';
   end if;

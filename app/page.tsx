@@ -429,7 +429,7 @@ export default function Home() {
   const currentStore = stores.find((item)=>item.id === storeId) ?? null;
   const isEvaluator = profile?.role === "manager" || profile?.role === "supervisor";
   const isOwner = Boolean(profile?.is_owner);
-  const canSwitchStores = Boolean(isOwner || profile?.role === "manager");
+  const canSwitchStores = Boolean(isOwner || profile?.role === "supervisor");
   const canViewDaily = Boolean(isEvaluator || isOwner);
   const canViewAllDailyStores = canSwitchStores;
   const dailyVisibleStores = useMemo(()=>canViewAllDailyStores ? stores : stores.filter((store)=>store.id === (profile?.store_id || storeId)),[canViewAllDailyStores,profile?.store_id,storeId,stores]);
@@ -453,9 +453,9 @@ export default function Home() {
     const { data: storeData } = await storesRequest;
     const nextStores = (storeData ?? []) as StoreRecord[];
     setStores(nextStores);
-    if (nextProfile.is_owner || nextProfile.role === "manager") setStoreId((current)=>nextStores.some((item)=>item.id === current) ? current : (nextProfile.store_id??nextStores[0]?.id??""));
+    if (nextProfile.is_owner || nextProfile.role === "supervisor") setStoreId((current)=>nextStores.some((item)=>item.id === current) ? current : (nextProfile.store_id??nextStores[0]?.id??""));
     else setStoreId(nextProfile.store_id ?? "");
-    setDailyStoreId(nextProfile.is_owner || nextProfile.role === "manager"?"all":(nextProfile.store_id??""));
+    setDailyStoreId(nextProfile.is_owner || nextProfile.role === "supervisor"?"all":(nextProfile.store_id??""));
     setBooting(false);
   }, []);
 
