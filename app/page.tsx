@@ -3,6 +3,7 @@
 import Image from "next/image";
 import { type ChangeEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BarcodeFormat, BrowserMultiFormatOneDReader, type IScannerControls } from "@zxing/browser";
+import { DecodeHintType } from "@zxing/library";
 import { Barcode, Boxes, Building2, CalendarDays, Camera, CheckCircle2, Check, ChevronRight, CircleDollarSign, ClipboardCheck, Clock3, Download, Eye, EyeOff, FileSpreadsheet, Hand, KeyRound, LoaderCircle, LogIn, LogOut, Mail, PackageSearch, Plus, RefreshCw, Ruler, ScanLine, ShieldCheck, Store, Tags, TriangleAlert, Upload, UserRound, UserPlus, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -103,6 +104,18 @@ const GARMENT_BARCODE_FORMATS = [
   BarcodeFormat.ITF,
   BarcodeFormat.CODABAR,
 ];
+
+function scannerHints(userAgent: string) {
+  const hints = new Map<DecodeHintType, unknown>([
+    [DecodeHintType.POSSIBLE_FORMATS, GARMENT_BARCODE_FORMATS],
+  ]);
+
+  // Android entrega cuadros con más variación entre fabricantes. TRY_HARDER
+  // conserva el intento central inmediato y amplía la búsqueda solo cuando
+  // la etiqueta impresa resulta difícil de decodificar.
+  if (/Android/i.test(userAgent)) hints.set(DecodeHintType.TRY_HARDER, true);
+  return hints;
+}
 
 type ExtendedCameraCapabilities = MediaTrackCapabilities & {
   focusMode?: string[];
@@ -860,8 +873,7 @@ export default function Home() {
 
       if(cameraSession!==cameraSessionRef.current){stream.getTracks().forEach((track)=>track.stop());return;}
       const optimization=await optimizeCamera(stream,videoElement);
-      const reader=new BrowserMultiFormatOneDReader(undefined,{delayBetweenScanAttempts:35,delayBetweenScanSuccess:60});
-      reader.possibleFormats=GARMENT_BARCODE_FORMATS;
+      const reader=new BrowserMultiFormatOneDReader(scannerHints(navigator.userAgent),{delayBetweenScanAttempts:35,delayBetweenScanSuccess:60});
       const quality=optimization.width&&optimization.height?` · ${optimization.width}×${optimization.height}`:"";
       setCameraStatus(optimization.focus?`Cámara principal 1× · enfoque continuo${quality}`:`Cámara trasera principal 1×${quality}`);
       controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
