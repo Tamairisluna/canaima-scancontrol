@@ -105,16 +105,10 @@ const GARMENT_BARCODE_FORMATS = [
   BarcodeFormat.CODABAR,
 ];
 
-function scannerHints(userAgent: string) {
-  const hints = new Map<DecodeHintType, unknown>([
+function scannerHints() {
+  return new Map<DecodeHintType, unknown>([
     [DecodeHintType.POSSIBLE_FORMATS, GARMENT_BARCODE_FORMATS],
   ]);
-
-  // Android entrega cuadros con más variación entre fabricantes. TRY_HARDER
-  // conserva el intento central inmediato y amplía la búsqueda solo cuando
-  // la etiqueta impresa resulta difícil de decodificar.
-  if (/Android/i.test(userAgent)) hints.set(DecodeHintType.TRY_HARDER, true);
-  return hints;
 }
 
 type ExtendedCameraCapabilities = MediaTrackCapabilities & {
@@ -873,11 +867,22 @@ export default function Home() {
 
       if(cameraSession!==cameraSessionRef.current){stream.getTracks().forEach((track)=>track.stop());return;}
       const optimization=await optimizeCamera(stream,videoElement);
-      const reader=new BrowserMultiFormatOneDReader(scannerHints(navigator.userAgent),{delayBetweenScanAttempts:35,delayBetweenScanSuccess:60});
+      const reader=new BrowserMultiFormatOneDReader(scannerHints(),{delayBetweenScanAttempts:35,delayBetweenScanSuccess:60});
+      const androidScanner=/Android/i.test(navigator.userAgent);
+      let failedScanAttempts=0;
       const quality=optimization.width&&optimization.height?` · ${optimization.width}×${optimization.height}`:"";
       setCameraStatus(optimization.focus?`Cámara principal 1× · enfoque continuo${quality}`:`Cámara trasera principal 1×${quality}`);
       controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
-        if(!result)return;
+        const completedDeepAttempt=reader.hints.has(DecodeHintType.TRY_HARDER);
+        if(completedDeepAttempt)reader.hints.delete(DecodeHintType.TRY_HARDER);
+        if(!result){
+          failedScanAttempts+=1;
+          // Un intento profundo aislado ayuda con etiquetas pequeñas o de bajo
+          // contraste sin bloquear el video de Android en todos los fotogramas.
+          if(androidScanner&&failedScanAttempts%24===0)reader.hints.set(DecodeHintType.TRY_HARDER,true);
+          return;
+        }
+        failedScanAttempts=0;
         const scanned=normalizeBarcode(result.getText()),now=Date.now();
         if(!scanned)return;
         if(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<900){lastScanRef.current.at=now;return;}
