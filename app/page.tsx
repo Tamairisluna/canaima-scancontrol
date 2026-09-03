@@ -104,11 +104,31 @@ const GARMENT_BARCODE_FORMATS = [
   BarcodeFormat.ITF,
   BarcodeFormat.CODABAR,
 ];
+const NATIVE_BARCODE_FORMATS = ["ean_13","ean_8","upc_a","upc_e","code_128","code_39","code_93","itf","codabar"] as const;
+
+type NativeBarcodeFormat = typeof NATIVE_BARCODE_FORMATS[number];
+type NativeBarcodeDetector = { detect(source:HTMLVideoElement):Promise<Array<{rawValue:string}>> };
+type NativeBarcodeDetectorConstructor = {
+  new(options:{formats:NativeBarcodeFormat[]}):NativeBarcodeDetector;
+  getSupportedFormats():Promise<string[]>;
+};
 
 function scannerHints() {
   return new Map<DecodeHintType, unknown>([
     [DecodeHintType.POSSIBLE_FORMATS, GARMENT_BARCODE_FORMATS],
   ]);
+}
+
+async function androidBarcodeDetector() {
+  if(typeof window==="undefined"||!/Android/i.test(navigator.userAgent))return null;
+  const Detector=(window as Window&{BarcodeDetector?:NativeBarcodeDetectorConstructor}).BarcodeDetector;
+  if(!Detector)return null;
+  try{
+    const supported=await Detector.getSupportedFormats();
+    const formats=NATIVE_BARCODE_FORMATS.filter((format)=>supported.includes(format));
+    if(!formats.includes("ean_13"))return null;
+    return new Detector({formats:[...formats]});
+  }catch{return null;}
 }
 
 type ExtendedCameraCapabilities = MediaTrackCapabilities & {
@@ -867,28 +887,57 @@ export default function Home() {
 
       if(cameraSession!==cameraSessionRef.current){stream.getTracks().forEach((track)=>track.stop());return;}
       const optimization=await optimizeCamera(stream,videoElement);
-      const reader=new BrowserMultiFormatOneDReader(scannerHints(),{delayBetweenScanAttempts:35,delayBetweenScanSuccess:60});
-      const androidScanner=/Android/i.test(navigator.userAgent);
-      let failedScanAttempts=0;
       const quality=optimization.width&&optimization.height?` · ${optimization.width}×${optimization.height}`:"";
-      setCameraStatus(optimization.focus?`Cámara principal 1× · enfoque continuo${quality}`:`Cámara trasera principal 1×${quality}`);
-      controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
-        const completedDeepAttempt=reader.hints.has(DecodeHintType.TRY_HARDER);
-        if(completedDeepAttempt)reader.hints.delete(DecodeHintType.TRY_HARDER);
-        if(!result){
-          failedScanAttempts+=1;
-          // Un intento profundo aislado ayuda con etiquetas pequeñas o de bajo
-          // contraste sin bloquear el video de Android en todos los fotogramas.
-          if(androidScanner&&failedScanAttempts%24===0)reader.hints.set(DecodeHintType.TRY_HARDER,true);
-          return;
-        }
-        failedScanAttempts=0;
-        const scanned=normalizeBarcode(result.getText()),now=Date.now();
+      const baseCameraStatus=optimization.focus?`Cámara principal 1× · enfoque continuo${quality}`:`Cámara trasera principal 1×${quality}`;
+      const acceptDecodedBarcode=(rawValue:string)=>{
+        const scanned=normalizeBarcode(rawValue),now=Date.now();
         if(!scanned)return;
         if(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<900){lastScanRef.current.at=now;return;}
         lastScanRef.current={code:scanned,at:now};
         void registerCode(scanned,evaluation);
-      });
+      };
+      const startZxingReader=async()=>{
+        const reader=new BrowserMultiFormatOneDReader(scannerHints(),{delayBetweenScanAttempts:35,delayBetweenScanSuccess:60});
+        const androidScanner=/Android/i.test(navigator.userAgent);
+        let failedScanAttempts=0;
+        setCameraStatus(baseCameraStatus);
+        controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
+          const completedDeepAttempt=reader.hints.has(DecodeHintType.TRY_HARDER);
+          if(completedDeepAttempt)reader.hints.delete(DecodeHintType.TRY_HARDER);
+          if(!result){
+            failedScanAttempts+=1;
+            if(androidScanner&&failedScanAttempts%24===0)reader.hints.set(DecodeHintType.TRY_HARDER,true);
+            return;
+          }
+          failedScanAttempts=0;
+          acceptDecodedBarcode(result.getText());
+        });
+      };
+
+      const nativeDetector=await androidBarcodeDetector();
+      if(nativeDetector&&cameraSession===cameraSessionRef.current){
+        let stopped=false,nativeTimer=0,nativeFailures=0;
+        const stopNative=()=>{stopped=true;if(nativeTimer)window.clearTimeout(nativeTimer);};
+        controlsRef.current={stop:stopNative};
+        setCameraStatus(`Lector nativo Android · cámara principal 1×${quality}`);
+        const scanNative=async()=>{
+          if(stopped||cameraSession!==cameraSessionRef.current)return;
+          try{
+            const detected=await nativeDetector.detect(videoElement);
+            nativeFailures=0;
+            if(detected[0]?.rawValue)acceptDecodedBarcode(detected[0].rawValue);
+          }catch{
+            nativeFailures+=1;
+            if(nativeFailures>=2){
+              stopNative();
+              if(cameraSession===cameraSessionRef.current)await startZxingReader();
+              return;
+            }
+          }
+          if(!stopped)nativeTimer=window.setTimeout(()=>void scanNative(),35);
+        };
+        window.requestAnimationFrame(()=>void scanNative());
+      }else await startZxingReader();
     }
     catch(error){
       if(cameraSession!==cameraSessionRef.current)return;
