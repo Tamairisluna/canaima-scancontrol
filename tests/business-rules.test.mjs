@@ -19,6 +19,31 @@ after(async () => {
   await vite.close();
 });
 
+test("transfer import uses only Articulo, preserves zeroes and deduplicates exact articles", async () => {
+  const { parseTransfersWorkbook } = await vite.ssrLoadModule("/app/lib/transfers.ts");
+  const workbook = utils.book_new();
+  utils.book_append_sheet(workbook, utils.aoa_to_sheet([["Artículo"], [" 00125 "], ["00125"], ["125"], ["ABC-12"]]), "Traslados");
+  assert.deepEqual(parseTransfersWorkbook(workbook), ["00125", "125", "ABC-12"]);
+});
+
+test("transfer import rejects barcode-only, additional columns, and empty documents", async () => {
+  const { parseTransfersWorkbook } = await vite.ssrLoadModule("/app/lib/transfers.ts");
+  for (const rows of [[["Código barras"], ["9880011172917"]], [["Articulo", "Precio"], ["ABC", 3]], [["Articulo"]], [["Articulo"], ["ABC", "unexpected"]]]) {
+    const workbook = utils.book_new();
+    utils.book_append_sheet(workbook, utils.aoa_to_sheet(rows), "Traslados");
+    assert.throws(() => parseTransfersWorkbook(workbook), /columna|artículos/);
+  }
+});
+
+test("formatted numeric transfer articles keep their leading zeroes", async () => {
+  const { parseTransfersWorkbook } = await vite.ssrLoadModule("/app/lib/transfers.ts");
+  const workbook = utils.book_new();
+  const sheet = utils.aoa_to_sheet([["Articulo"], [125]]);
+  sheet.A2.z = "00000";
+  utils.book_append_sheet(workbook, sheet, "Traslados");
+  assert.deepEqual(parseTransfersWorkbook(workbook), ["00125"]);
+});
+
 test("keeps barcode identifiers exact, including leading zeroes", async () => {
   const { normalizeBarcode } = await vite.ssrLoadModule("/app/lib/barcode.ts");
 
@@ -256,7 +281,7 @@ test("keeps public registration store-bound and always employee-controlled", asy
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const migration = await readFile(new URL("../SUPABASE_CAMBIOS_PRIORITARIOS.sql", import.meta.url), "utf8");
 
-  assert.match(page, /supabase\.rpc\("registration_stores"\)/);
+  assert.match(page, /supabase\.rpc\("registration_stores_by_city"\)/);
   assert.match(page, /options:\{data:\{full_name:fullName,store_id:signupForm\.storeId\}\}/);
   assert.doesNotMatch(page, /options:\{data:\{full_name:fullName,store_id:signupForm\.storeId,role:/);
   assert.match(migration, /jsonb_build_object\('role', 'employee'\)/);

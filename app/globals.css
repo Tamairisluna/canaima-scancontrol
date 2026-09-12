@@ -1538,3 +1538,12 @@ html.login-active,html.login-active body{background:#061b31}
   .evaluation-page .evaluation-camera{gap:9px;padding:9px}
   .evaluation-page .evaluation-camera span{display:none}
 }
+
+/* Independent transfer inventory: no changes to camera or login styles. */
+.transfers-card{background:#fff;border:1px solid #dce4e9;border-radius:22px;padding:24px;display:flex;flex-direction:column;gap:16px;margin-top:22px;min-width:0;box-shadow:0 4px 14px #16364c08}
+.transfers-heading{display:flex;gap:14px;align-items:center;color:#0b4057}.transfers-heading svg{flex-shrink:0}.transfers-heading h2{font-size:22px;margin:0}.transfers-heading p{margin:6px 0 0;color:#687985;font-size:14px}.transfers-card>small{color:#687985}.transfers-card .upload-select-button{max-width:480px;min-height:48px;text-align:center}.transfers-card input:disabled{cursor:wait}.transfers-file{display:flex;flex-direction:column;gap:6px;overflow-wrap:anywhere}.transfers-file span{font-size:14px;color:#687985}.transfers-error{color:#a32b35;font-size:14px}.transfers-message{color:#287746;font-size:14px}.transfers-delete{display:flex;gap:10px;flex-wrap:wrap}.transfers-delete p{width:100%}.transfer-alert{display:flex;gap:12px;align-items:center;background:#fff8e8;border:1px solid #e6cd8a;border-radius:14px;padding:16px;margin:16px 0;color:#0b4057}.transfer-alert svg{flex-shrink:0}.transfer-alert p{font-size:14px;margin:5px 0 0;line-height:1.5}
+@media(max-width:520px){.transfers-card{padding:20px}.transfers-card .upload-select-button{font-size:14px;width:100%}}
+.catalog-page>.transfers-card{order:4}
+.transfers-card .upload-native-picker{background:#073f5c;color:#fff;border-radius:14px;padding:12px 18px;gap:10px}
+.transfers-card .upload-native-picker input{position:absolute;z-index:2;inset:0;display:block;width:100%;height:100%;margin:0;padding:0;opacity:0;cursor:pointer}
+.transfers-card .upload-native-picker:focus-within{outline:3px solid #8ab6cc;outline-offset:3px}
