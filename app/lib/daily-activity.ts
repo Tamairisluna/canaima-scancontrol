@@ -25,6 +25,7 @@ export type DailyActivityRow = {
 };
 
 export type ActivityGroup = { label: string; scans: number; incidents: number };
+export type EmployeeActivityGroup = ActivityGroup & { key: string; storeName: string };
 export type ActivityCountRow = Pick<DailyActivityRow, "storeId" | "eventType" | "observation">;
 export type ActivityStore = { id: string; name: string };
 export type StoreActivitySummary = {
@@ -56,6 +57,14 @@ function grouped(rows: DailyActivityRow[], key: (row: DailyActivityRow) => strin
 
 export function summarizeDailyActivity(rows: DailyActivityRow[]) {
   const scans = rows.filter((row) => row.eventType === "SCAN");
+  const employees = new Map<string, EmployeeActivityGroup>();
+  for (const row of rows) {
+    const key = JSON.stringify([row.employeeId, row.storeId]);
+    const employee = employees.get(key) ?? { key, label: row.employeeName, storeName: row.storeName, scans: 0, incidents: 0 };
+    if (row.eventType === "SCAN") employee.scans += 1;
+    if (isActivityIncident(row)) employee.incidents += 1;
+    employees.set(key, employee);
+  }
   return {
     totalScans: scans.length,
     incidents: rows.filter(isActivityIncident).length,
@@ -63,7 +72,7 @@ export function summarizeDailyActivity(rows: DailyActivityRow[]) {
     mislabeled: scans.filter((row) => row.observation === "MAL ETIQUETADO").length,
     withoutLabel: scans.filter((row) => row.observation === "SIN ETIQUETA").length,
     smallerSizeNotDisplayed: rows.filter((row) => row.eventType === "SIZE_NOT_DISPLAYED").length,
-    byEmployee: grouped(rows, (row) => row.employeeName),
+    byEmployee: Array.from(employees.values()).sort((a, b) => b.scans - a.scans || a.label.localeCompare(b.label, "es") || a.storeName.localeCompare(b.storeName, "es")),
     byBrand: grouped(rows, (row) => row.brand),
     byCategory: grouped(rows, (row) => row.category),
   };

@@ -150,6 +150,23 @@ test("builds a Caracas business week from Monday to Monday", async () => {
   });
 });
 
+test("keeps employees with the same name and activity in different stores separate", async () => {
+  const { summarizeDailyActivity } = await vite.ssrLoadModule("/app/lib/daily-activity.ts");
+  const row = { employeeId: "a", employeeName: "Ana", storeId: "s1", storeName: "Sucursal 1", eventType: "SCAN", observation: null, brand: "Marca", category: "Calzado" };
+  const summary = summarizeDailyActivity([
+    row,
+    { ...row, observation: "PRECIO ERRÓNEO" },
+    { ...row, employeeId: "b" },
+    { ...row, storeId: "s2", storeName: "Sucursal 2" },
+  ]);
+  assert.equal(summary.totalScans, 4);
+  assert.equal(summary.incidents, 1);
+  assert.equal(summary.byEmployee.length, 3);
+  assert.equal(summary.byEmployee[0].scans, 2);
+  assert.equal(summary.byEmployee[0].storeName, "Sucursal 1");
+  assert.equal(new Set(summary.byEmployee.map((group) => group.key)).size, 3);
+});
+
 test("keeps scanner latency, camera and PWA safeguards explicit", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const manifest = JSON.parse(await readFile(new URL("../public/manifest.webmanifest", import.meta.url), "utf8"));
