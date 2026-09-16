@@ -19,6 +19,7 @@ import { OBSERVATIONS, summarizeEvaluation, type Observation } from "@/app/lib/e
 import { caracasWeekRange, dateInputValue, isActivityIncident, summarizeActivityByStore, summarizeDailyActivity, type ActivityCountRow, type DailyActivityRow, type StoreActivitySummary } from "@/app/lib/daily-activity";
 import { ActiveTransfers, useActiveTransfers } from "@/app/active-transfers";
 import { findMinimumSize, matchesExpectedMinimum } from "@/app/lib/size-validation";
+import { MaintenanceScreen, useMaintenanceMode } from "@/app/maintenance-mode";
 
 type RoleCode = "employee" | "manager" | "supervisor";
 type View = "scanner" | "evaluation" | "daily" | "catalog" | "users";
@@ -446,6 +447,7 @@ export default function Home() {
   const [weeklySummary, setWeeklySummary] = useState<StoreActivitySummary[]>([]);
   const [weeklyLoading, setWeeklyLoading] = useState(false);
   const [weeklyError, setWeeklyError] = useState<string | null>(null);
+  const maintenance = useMaintenanceMode(sessionUserId);
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importInFlightRef = useRef(false);
@@ -1128,8 +1130,18 @@ export default function Home() {
 
   async function signOut(){stopCamera();setLastProduct(null);setScanFeedback(null);setEvaluationItems([]);await supabase.auth.signOut();}
 
+  useEffect(()=>{
+    if(!maintenance.maintenance_enabled||isOwner)return;
+    stopCamera();
+  // `stopCamera` libera la sesión vigente; no se incluye como dependencia
+  // porque se recrea en cada render y provocaría reinicios innecesarios.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[maintenance.maintenance_enabled,isOwner]);
+
   if(booting)return <main className="loading-screen"><Image src="/canaima-logo.svg" alt="Grupo Canaima" width={480} height={250} priority/><LoaderCircle className="spin" size={26}/><span>Preparando ScanControl…</span></main>;
   if(!sessionUserId)return <LoginScreen/>;
+  if(maintenance.checking&&!isOwner)return <main className="loading-screen"><Image src="/canaima-logo.svg" alt="Grupo Canaima" width={480} height={250} priority/><LoaderCircle className="spin" size={26}/><span>Comprobando disponibilidad…</span></main>;
+  if(profile&&maintenance.maintenance_enabled&&!isOwner)return <MaintenanceScreen role={profile.role} fullName={profile.full_name||"Usuario"} state={maintenance} onRefresh={maintenance.refresh} onSignOut={signOut}/>;
   if(!profile||!profile.is_active||!storeId)return <main className="pending-screen"><Toaster position="top-center" richColors/><section><div className="pending-icon"><UserRound size={34}/></div><h1>Cuenta pendiente de asignación</h1><p>Romer debe asignar una tienda activa antes de que puedas utilizar ScanControl.</p><Button variant="outline" onClick={signOut}><LogOut size={17}/> Cerrar sesión</Button></section></main>;
 
   return <div className="app-shell"><Toaster position="top-center" richColors/>
