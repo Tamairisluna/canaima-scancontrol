@@ -9,6 +9,7 @@ export type CatalogImportProduct = {
   size: string;
   style: string;
   amount: number;
+  discount_percent: number;
   brand: string;
   category: string;
 };
@@ -22,7 +23,7 @@ export type ParsedCatalog = {
   unavailableRows: number;
 };
 
-type CatalogColumn = "barcode" | "article" | "description" | "color" | "size" | "style" | "amount" | "brand" | "category" | "quantity";
+type CatalogColumn = "barcode" | "article" | "description" | "color" | "size" | "style" | "amount" | "discount" | "brand" | "category" | "quantity";
 type ColumnMap = Record<CatalogColumn, number>;
 
 const HEADER_ALIASES: Record<CatalogColumn, string[]> = {
@@ -33,6 +34,7 @@ const HEADER_ALIASES: Record<CatalogColumn, string[]> = {
   size: ["tamano", "talla", "size"],
   style: ["estilo", "style"],
   amount: ["monto a pagar", "monto pagar", "precio final", "monto neto", "precio venta", "precio"],
+  discount: ["descuento", "descuento porcentaje", "discount"],
   brand: ["marca"],
   category: ["cat 1", "cat1", "categoria 1"],
   quantity: ["cantidad", "existencia", "existencias", "stock"],
@@ -69,6 +71,14 @@ const parseQuantity = (value: unknown) => {
   return Number.isFinite(quantity) ? quantity : null;
 };
 
+const parseDiscount = (value: unknown) => {
+  const normalized = String(value ?? "").trim().replace("%", "").replace(",", ".");
+  if (!normalized) return 0;
+  const discount = Number(normalized);
+  if (!Number.isFinite(discount)) return 0;
+  return Math.min(100, Math.max(0, discount));
+};
+
 function resolveColumns(row: unknown[]): ColumnMap {
   const headers = row.map(normalizeHeader);
   const find = (aliases: string[]) => aliases
@@ -83,6 +93,7 @@ function resolveColumns(row: unknown[]): ColumnMap {
     size: find(HEADER_ALIASES.size),
     style: find(HEADER_ALIASES.style),
     amount: find(HEADER_ALIASES.amount),
+    discount: find(HEADER_ALIASES.discount),
     brand: find(HEADER_ALIASES.brand),
     category: find(HEADER_ALIASES.category),
     quantity: find(HEADER_ALIASES.quantity),
@@ -142,6 +153,7 @@ export function parseCatalogWorkbook(workbook: WorkBook): ParsedCatalog {
         size: columns.size >= 0 ? cleanText(row[columns.size]) : "No especificado",
         style: columns.style >= 0 ? cleanText(row[columns.style]) : "No especificado",
         amount: parseAmount(row[columns.amount]),
+        discount_percent: columns.discount >= 0 ? parseDiscount(row[columns.discount]) : 0,
         brand: columns.brand >= 0 ? cleanText(row[columns.brand]) : "No especificado",
         category: columns.category >= 0 ? cleanText(row[columns.category]) : "No especificado",
       });
@@ -170,6 +182,9 @@ export function getImportErrorMessage(error: unknown) {
   }
   if ((normalized.includes("brand") || normalized.includes("category")) && normalized.includes("column")) {
     return "Activa primero la actualización de Registro diario en Supabase para importar Marca y Cat 1.";
+  }
+  if (normalized.includes("discount_percent") && normalized.includes("column")) {
+    return "Activa primero la actualización de descuento en Supabase e inténtalo nuevamente.";
   }
   if (normalized.includes("failed to fetch") || normalized.includes("network")) {
     return "Se perdió la conexión durante la carga. Comprueba internet e inténtalo nuevamente.";

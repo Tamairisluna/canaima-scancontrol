@@ -3,7 +3,7 @@ import { summarizeEvaluation, type Observation } from "./evaluation";
 
 export type ReportItem = {
   article: string; barcode: string; description: string; color: string;
-  size: string; amount: number; observation: Observation;
+  size: string; expectedSize?: string; amount: number; observation: Observation;
 };
 
 export function createEvaluationReport(storeName: string, items: ReportItem[], date = new Date()) {
@@ -58,7 +58,7 @@ export function createEvaluationReport(storeName: string, items: ReportItem[], d
         ...(incidents.length ? [table(["Artículo y código", "Producto", "Color y talla", "Precio", "Incidencia"], [2100, 2300, 1500, 1160, 2300],
           incidents.map((item) => [
             `${item.article}${item.barcode ? `\n${item.barcode}` : ""}`,
-            item.description, `${item.color}\nTalla ${item.size}`, money.format(item.amount), item.observation,
+            item.description, `${item.color}\nTalla ${item.size}${item.expectedSize ? `\nMenor esperada ${item.expectedSize}` : ""}`, money.format(item.amount), item.observation,
           ]))] : [new Paragraph("No se registraron incidencias en esta evaluación.")]),
         heading("Conformidad de la revisión"),
         new Paragraph({ text: "Nombre y firma de los responsables", spacing: { after: 440 }, keepNext: true }),

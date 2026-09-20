@@ -1560,3 +1560,24 @@ html.login-active,html.login-active body{background:#061b31}
 .maintenance-leadership-note{border:1px solid #e4dfcb;background:#fffcf2;color:#725e21;font-size:11px;line-height:1.6}
 .maintenance-actions{margin-top:26px;display:grid;grid-template-columns:1fr 1fr;gap:10px}.maintenance-actions button{min-height:48px}.maintenance-actions button:first-child{background:#0b4b68;color:#fff}.maintenance-card>small{display:block;margin-top:18px;color:#89979d;font-size:9px}
 @media(max-width:600px){.maintenance-screen{padding:max(16px,env(safe-area-inset-top)) 15px max(18px,env(safe-area-inset-bottom));gap:14px}.maintenance-header{align-items:flex-start}.maintenance-brand img{width:58px}.maintenance-brand strong{font-size:17px}.maintenance-brand span{font-size:8px}.maintenance-secure{padding:8px;font-size:0}.maintenance-card{padding:30px 20px;border-radius:22px}.maintenance-symbol{width:66px;height:66px;border-radius:19px}.maintenance-card>p{font-size:12px}.maintenance-actions{grid-template-columns:1fr}.maintenance-assurance,.maintenance-leadership-note{padding:15px}}
+
+/* Accesos, descuento y talla menor — 2026-09-20. */
+.result-panel>.price-block{display:grid!important;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:18px;text-align:right}
+.price-value{min-width:0}.price-value strong{white-space:nowrap}
+.discount-value{min-width:116px;padding:12px 14px;border:1px solid #dce5e9;border-radius:14px;background:#f5f8fa;text-align:center}
+.price-block .discount-value span{color:#667b86}.price-block .discount-value strong{margin:3px 0 1px;color:#536b77;font-size:23px;letter-spacing:-.025em;white-space:nowrap}.price-block .discount-value small{display:block;color:#7a8b94}
+.discount-value.has-discount{border-color:#c9d985;background:#f6f9df}.price-block .discount-value.has-discount span{color:#65730f}.price-block .discount-value.has-discount strong{color:#68790d}.price-block .discount-value.has-discount small{color:#77832d}
+.evaluation-page>.evaluation-toolbar{order:2}.evaluation-page>.evaluation-size-validation{order:3;margin:0}.evaluation-page>.evaluation-workbench{order:4}.evaluation-page>.incident-panel{order:5}.evaluation-page>.summary-grid{order:6}.evaluation-page>.data-card{order:7}
+.evaluation-size-gate{margin:0 0 10px}.evaluation-size-gate+ .evaluation-camera{margin-top:0}
+.summary-grid{grid-template-columns:repeat(6,minmax(0,1fr))}
+.daily-row-incident .daily-row-icon{background:#fff1ef;color:#b33d36}
+.supervisor-stores{line-height:1.35}
+
+@media(max-width:900px){.summary-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:760px){
+  .result-panel>.price-block{grid-template-columns:minmax(0,1fr) auto;gap:11px;padding:18px}
+  .price-value strong{font-size:32px}.discount-value{min-width:102px;padding:10px}.price-block .discount-value strong{font-size:20px}
+  .summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .evaluation-size-gate{margin:0 0 9px}
+}
+@media(max-width:390px){.result-panel>.price-block{grid-template-columns:1fr;text-align:center}.discount-value{width:100%}}

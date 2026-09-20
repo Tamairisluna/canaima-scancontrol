@@ -43,6 +43,10 @@ export function isActivityIncident(row: Pick<DailyActivityRow, "eventType" | "ob
   return row.eventType === "SIZE_NOT_DISPLAYED" || Boolean(row.observation && row.observation !== "SIN INCIDENCIAS");
 }
 
+export function isSmallerSizeIncident(row: Pick<DailyActivityRow, "eventType" | "observation">) {
+  return row.eventType === "SIZE_NOT_DISPLAYED" || row.observation === "TALLA MENOR NO EXHIBIDA";
+}
+
 function grouped(rows: DailyActivityRow[], key: (row: DailyActivityRow) => string): ActivityGroup[] {
   const values = new Map<string, ActivityGroup>();
   for (const row of rows) {
@@ -71,7 +75,7 @@ export function summarizeDailyActivity(rows: DailyActivityRow[]) {
     priceErrors: scans.filter((row) => row.observation === "PRECIO ERRÓNEO").length,
     mislabeled: scans.filter((row) => row.observation === "MAL ETIQUETADO").length,
     withoutLabel: scans.filter((row) => row.observation === "SIN ETIQUETA").length,
-    smallerSizeNotDisplayed: rows.filter((row) => row.eventType === "SIZE_NOT_DISPLAYED").length,
+    smallerSizeNotDisplayed: rows.filter(isSmallerSizeIncident).length,
     byEmployee: Array.from(employees.values()).sort((a, b) => b.scans - a.scans || a.label.localeCompare(b.label, "es") || a.storeName.localeCompare(b.storeName, "es")),
     byBrand: grouped(rows, (row) => row.brand),
     byCategory: grouped(rows, (row) => row.category),
@@ -98,7 +102,7 @@ export function summarizeActivityByStore(rows: ActivityCountRow[], stores: Activ
     if (row.observation === "PRECIO ERRÓNEO") summary.priceErrors += 1;
     if (row.observation === "MAL ETIQUETADO") summary.mislabeled += 1;
     if (row.observation === "SIN ETIQUETA") summary.withoutLabel += 1;
-    if (row.eventType === "SIZE_NOT_DISPLAYED") summary.smallerSizeNotDisplayed += 1;
+    if (isSmallerSizeIncident(row)) summary.smallerSizeNotDisplayed += 1;
   }
 
   return Array.from(summaries.values()).sort((left, right) => right.incidents - left.incidents || right.scans - left.scans || left.storeName.localeCompare(right.storeName, "es"));

@@ -17,13 +17,14 @@ try {
     row,
     { ...row, article: "CAM-002", description: "Camisa de algodón", observation: "MAL ETIQUETADO" },
     { ...row, article: "SIN CÓDIGO", barcode: "", description: "Producto sin identificar", color: "No especificado", size: "No especificado", amount: 0, observation: "SIN ETIQUETA" },
+    { ...row, article: "PAN-003", size: "M", expectedSize: "S", observation: "TALLA MENOR NO EXHIBIDA" },
   ];
   const dir = await mkdtemp(join(tmpdir(), "scancontrol-report-"));
   for (const [name, values] of [["sample", items], ["multipage", [...items, ...Array.from({ length: 22 }, () => row)]]]) {
     const file = join(dir, `${name}.docx`);
     await writeFile(file, await Packer.toBuffer(createEvaluationReport("BB SCI 2023, C.A.", values, new Date("2026-09-11T12:00:00Z"))));
     const xml = execFileSync("unzip", ["-p", file, "word/document.xml"], { encoding: "utf8" });
-    for (const label of ["Responsable 1", "Responsable 2", "Supervisor del área", "0012345678901", "59.99", "BB SCI 2023, C.A."]) assert.ok(xml.includes(label), label);
+    for (const label of ["Responsable 1", "Responsable 2", "Supervisor del área", "0012345678901", "59.99", "BB SCI 2023, C.A.", "TALLA MENOR NO EXHIBIDA", "Menor esperada S"]) assert.ok(xml.includes(label), label);
     assert.ok(!xml.includes("CORRECTO-NO-DEBE-APARECER"));
     assert.match(xml, /w:tblHeader/);
     assert.match(xml, /w:cantSplit/);

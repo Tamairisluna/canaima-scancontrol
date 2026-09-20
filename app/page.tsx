@@ -16,7 +16,7 @@ import { toast } from "sonner";
 import { createProvisioningClient, supabase } from "@/app/lib/supabase";
 import { normalizeBarcode } from "@/app/lib/barcode";
 import { OBSERVATIONS, summarizeEvaluation, type Observation } from "@/app/lib/evaluation";
-import { caracasWeekRange, dateInputValue, isActivityIncident, summarizeActivityByStore, summarizeDailyActivity, type ActivityCountRow, type DailyActivityRow, type StoreActivitySummary } from "@/app/lib/daily-activity";
+import { caracasWeekRange, dateInputValue, isActivityIncident, isSmallerSizeIncident, summarizeActivityByStore, summarizeDailyActivity, type ActivityCountRow, type DailyActivityRow, type StoreActivitySummary } from "@/app/lib/daily-activity";
 import { ActiveTransfers, useActiveTransfers } from "@/app/active-transfers";
 import { findMinimumSize, matchesExpectedMinimum } from "@/app/lib/size-validation";
 import { MaintenanceScreen, useMaintenanceMode } from "@/app/maintenance-mode";
@@ -26,19 +26,20 @@ type View = "scanner" | "evaluation" | "daily" | "catalog" | "users";
 type StoreRecord = { id: string; name: string; slug: string; city?: string };
 type Profile = { id: string; full_name: string | null; role: RoleCode; store_id: string | null; is_active: boolean; is_owner: boolean };
 type ManagedProfile = Profile & { email: string | null; created_at: string | null };
-type Product = { id: string | null; storeId: string; barcode: string; article: string; description: string; color: string; size: string; style: string; amount: number; brand: string; category: string };
-type EvaluationItem = Product & { rowId: string; observation: Observation; scannedAt: string };
+type Product = { id: string | null; storeId: string; barcode: string; article: string; description: string; color: string; size: string; style: string; amount: number; discountPercent: number; brand: string; category: string };
+type EvaluationItem = Product & { rowId: string; observation: Observation; expectedSize: string; scannedAt: string };
 type CatalogMeta = { id: string; fileName: string; rowCount: number; activatedAt: string | null } | null;
 type UploadStage = "selected" | "reading" | "parsing" | "preparing" | "uploading" | "activating" | "caching";
 type UploadState = { stage: UploadStage; fileName: string; done: number; total: number };
 type UploadFeedback = { kind: "success" | "error"; title: string; message: string } | null;
 type ScanFeedback = { code: string; storeName: string } | null;
-type SizeGate = { product: Product; expectedSize: string } | null;
+type SizeGate = { product: Product; expectedSize: string; source: "scanner" | "evaluation"; evaluationItemId?: string } | null;
 
 const ROLE_LABELS: Record<RoleCode, string> = { employee: "Empleado", manager: "Gerente", supervisor: "Supervisor" };
 const money = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const percentage = new Intl.NumberFormat("es-VE", { maximumFractionDigits: 2 });
 
-type ProductRow = { id:string; store_id:string; barcode:string; article:string; description:string|null; color:string|null; size:string|null; style:string|null; amount:number|string; brand?:string|null; category?:string|null };
+type ProductRow = { id:string; store_id:string; barcode:string; article:string; description:string|null; color:string|null; size:string|null; style:string|null; amount:number|string; discount_percent?:number|string|null; brand?:string|null; category?:string|null };
 
 function productFromRow(row: ProductRow): Product {
   return {
@@ -51,6 +52,7 @@ function productFromRow(row: ProductRow): Product {
     size: row.size || "No especificado",
     style: row.style || "No especificado",
     amount: Number(row.amount),
+    discountPercent: Math.min(100, Math.max(0, Number(row.discount_percent ?? 0) || 0)),
     brand: row.brand || "No especificado",
     category: row.category || "No especificado",
   };
@@ -227,7 +229,7 @@ function ExcelDocumentIcon({ size = "large" }: { size?: "large" | "small" }) {
 }
 
 function EvaluationSummaryIcon({ observation }: { observation?: Observation }) {
-  const Icon = observation === "SIN INCIDENCIAS" ? CheckCircle2 : observation === "PRECIO ERRÓNEO" ? CircleDollarSign : observation === "MAL ETIQUETADO" ? Tags : Hand;
+  const Icon = observation === "SIN INCIDENCIAS" ? CheckCircle2 : observation === "PRECIO ERRÓNEO" ? CircleDollarSign : observation === "MAL ETIQUETADO" ? Tags : observation === "TALLA MENOR NO EXHIBIDA" ? Ruler : Hand;
   return <span className={`summary-icon summary-icon-${observation === "SIN INCIDENCIAS" ? "success" : "default"}`} aria-hidden="true"><Icon size={20}/></span>;
 }
 
@@ -470,11 +472,13 @@ export default function Home() {
   },[]);
 
   const currentStore = stores.find((item)=>item.id === storeId) ?? null;
-  const isEvaluator = profile?.role === "manager" || profile?.role === "supervisor";
+  const isEvaluator = Boolean(profile && ["employee", "manager", "supervisor"].includes(profile.role));
   const isOwner = Boolean(profile?.is_owner);
   const canSwitchStores = Boolean(isOwner || profile?.role === "supervisor");
   const canViewDaily = Boolean(isEvaluator || isOwner);
   const canViewAllDailyStores = canSwitchStores;
+  const scannerSizeGate = sizeGate?.source === "scanner" ? sizeGate : null;
+  const evaluationSizeGate = sizeGate?.source === "evaluation" ? sizeGate : null;
   const dailyVisibleStores = useMemo(()=>canViewAllDailyStores ? stores : stores.filter((store)=>store.id === (profile?.store_id || storeId)),[canViewAllDailyStores,profile?.store_id,storeId,stores]);
   const roleLabel = isOwner ? "Administrador general" : profile ? ROLE_LABELS[profile.role] : "";
   const displayName = profile?.full_name || "Usuario";
@@ -550,9 +554,9 @@ export default function Home() {
       let data:ProductRow[]|null=null;
       let error:{message:string}|null=null;
       if(extendedColumns){
-        const primary=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount,brand,category").eq("catalog_id",activeCatalog.id).eq("store_id",targetStore).order("id",{ascending:true}).range(start,start+pageSize-1);
+        const primary=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount,discount_percent,brand,category").eq("catalog_id",activeCatalog.id).eq("store_id",targetStore).order("id",{ascending:true}).range(start,start+pageSize-1);
         data=primary.data as ProductRow[]|null;error=primary.error;
-        if(error&&/(brand|category)/i.test(error.message)){extendedColumns=false;const fallback=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("catalog_id",activeCatalog.id).eq("store_id",targetStore).order("id",{ascending:true}).range(start,start+pageSize-1);data=fallback.data as ProductRow[]|null;error=fallback.error;}
+        if(error&&/(brand|category|discount_percent)/i.test(error.message)){extendedColumns=false;const fallback=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("catalog_id",activeCatalog.id).eq("store_id",targetStore).order("id",{ascending:true}).range(start,start+pageSize-1);data=fallback.data as ProductRow[]|null;error=fallback.error;}
       }else{
         const fallback=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("catalog_id",activeCatalog.id).eq("store_id",targetStore).order("id",{ascending:true}).range(start,start+pageSize-1);data=fallback.data as ProductRow[]|null;error=fallback.error;
       }
@@ -573,8 +577,12 @@ export default function Home() {
     const { data: evaluation } = await supabase.from("evaluations").select("id").eq("store_id", targetStore).eq("created_by", userId).eq("status", "draft").order("created_at", { ascending:false }).limit(1).maybeSingle();
     if (!evaluation) { evaluationIdRef.current=null; setEvaluationId(null); setEvaluationItems([]); return; }
     evaluationIdRef.current=evaluation.id; setEvaluationId(evaluation.id);
-    const { data: rows } = await supabase.from("evaluation_items").select("id,product_id,store_id,barcode,article,description,color,size,style,amount,observation,scanned_at").eq("evaluation_id", evaluation.id).order("scanned_at", { ascending:false });
-    setEvaluationItems((rows ?? []).map((row)=>({ id:row.product_id, storeId:row.store_id, barcode:row.barcode ?? "", article:row.article, description:row.description ?? "", color:row.color ?? "No especificado", size:row.size ?? "No especificado", style:row.style ?? "No especificado", amount:Number(row.amount), brand:"No especificado", category:"No especificado", rowId:row.id, observation:row.observation as Observation, scannedAt:new Date(row.scanned_at).toLocaleTimeString("es", {hour:"numeric",minute:"2-digit"}) })));
+    const primaryItems = await supabase.from("evaluation_items").select("id,product_id,store_id,barcode,article,description,color,size,expected_size,style,amount,observation,scanned_at").eq("evaluation_id", evaluation.id).order("scanned_at", { ascending:false });
+    const fallbackItems = primaryItems.error&&/expected_size/i.test(primaryItems.error.message)
+      ? await supabase.from("evaluation_items").select("id,product_id,store_id,barcode,article,description,color,size,style,amount,observation,scanned_at").eq("evaluation_id", evaluation.id).order("scanned_at", { ascending:false })
+      : null;
+    const rows=(fallbackItems?.data??primaryItems.data) as Array<Record<string,unknown>>|null;
+    setEvaluationItems((rows ?? []).map((row)=>({ id:String(row.product_id??"")||null, storeId:String(row.store_id), barcode:String(row.barcode??""), article:String(row.article), description:String(row.description??""), color:String(row.color??"No especificado"), size:String(row.size??"No especificado"), expectedSize:String(row.expected_size??""), style:String(row.style??"No especificado"), amount:Number(row.amount), discountPercent:0, brand:"No especificado", category:"No especificado", rowId:String(row.id), observation:row.observation as Observation, scannedAt:new Date(String(row.scanned_at)).toLocaleTimeString("es", {hour:"numeric",minute:"2-digit"}) })));
   }, []);
 
   const loadManagedProfiles = useCallback(async () => {
@@ -782,13 +790,15 @@ export default function Home() {
     if(error&&!activitySetupWarningRef.current){activitySetupWarningRef.current=true;if(canViewDaily)toast.warning("Registro diario pendiente de activación",{description:"Ejecuta el SQL de esta versión en Supabase para conservar la actividad."});}
   }
 
-  async function saveEvaluationProduct(product: Product) {
+  async function saveEvaluationProduct(product: Product, expectedSize="") {
     const targetEvaluation = await ensureEvaluation();
-    if (!targetEvaluation) return;
-    const { data, error } = await supabase.from("evaluation_items").insert({ evaluation_id:targetEvaluation, store_id:storeId, product_id:product.id, barcode:product.barcode || null, article:product.article, description:product.description, color:product.color, size:product.size, style:product.style, amount:product.amount, observation:"SIN INCIDENCIAS" }).select("id,scanned_at").single();
-    if (error) return void toast.error("No se pudo guardar el producto evaluado");
-    setEvaluationItems((items)=>[{...product,rowId:data.id,observation:"SIN INCIDENCIAS",scannedAt:new Date(data.scanned_at).toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})},...items]);
-    void logActivity(product,{source:"evaluation",evaluationItemId:data.id,observation:"SIN INCIDENCIAS"});
+    if (!targetEvaluation) return null;
+    const { data, error } = await supabase.from("evaluation_items").insert({ evaluation_id:targetEvaluation, store_id:storeId, product_id:product.id, barcode:product.barcode || null, article:product.article, description:product.description, color:product.color, size:product.size, expected_size:expectedSize, style:product.style, amount:product.amount, observation:"SIN INCIDENCIAS" }).select("id,scanned_at").single();
+    if (error) { toast.error("No se pudo guardar el producto evaluado"); return null; }
+    const evaluationItem:EvaluationItem={...product,rowId:data.id,observation:"SIN INCIDENCIAS",expectedSize,scannedAt:new Date(data.scanned_at).toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})};
+    setEvaluationItems((items)=>[evaluationItem,...items]);
+    void logActivity(product,{source:"evaluation",evaluationItemId:data.id,observation:"SIN INCIDENCIAS",expectedSize});
+    return evaluationItem;
   }
 
   const lookupProduct = useCallback(async (normalized:string) => {
@@ -805,9 +815,9 @@ export default function Home() {
         activeCatalogIdRef.current=catalogId;
       }
       if(!catalogId)return null;
-      const primary=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount,brand,category").eq("catalog_id",catalogId).eq("store_id",storeId).eq("barcode",normalized).limit(1).maybeSingle();
+      const primary=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount,discount_percent,brand,category").eq("catalog_id",catalogId).eq("store_id",storeId).eq("barcode",normalized).limit(1).maybeSingle();
       let data=primary.data as ProductRow|null;let error:{message:string}|null=primary.error;
-      if(error&&/(brand|category)/i.test(error.message)){const fallback=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("catalog_id",catalogId).eq("store_id",storeId).eq("barcode",normalized).limit(1).maybeSingle();data=fallback.data as ProductRow|null;error=fallback.error;}
+      if(error&&/(brand|category|discount_percent)/i.test(error.message)){const fallback=await supabase.from("products").select("id,store_id,barcode,article,description,color,size,style,amount").eq("catalog_id",catalogId).eq("store_id",storeId).eq("barcode",normalized).limit(1).maybeSingle();data=fallback.data as ProductRow|null;error=fallback.error;}
       if(error||!data||productCacheStoreRef.current!==storeId)return null;
       const product=productFromRow(data as ProductRow);
       productCacheRef.current.set(normalized,product);
@@ -825,9 +835,10 @@ export default function Home() {
     // El decodificador de la cámara permanece abierto entre renders. La ref
     // garantiza que cada lectura consulte el bloqueo vigente, no el valor que
     // existía cuando se inició la sesión continua de cámara.
-    const activeSizeGate=sizeGateRef.current;
+    const source=evaluation?"evaluation":"scanner";
+    const activeSizeGate=sizeGateRef.current?.source===source?sizeGateRef.current:null;
     if (!product) {
-      if(activeSizeGate&&!evaluation){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Debes escanear primero la talla mínima ${activeSizeGate.expectedSize} para continuar.`});}
+      if(activeSizeGate){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Debes escanear primero la talla mínima ${activeSizeGate.expectedSize} para continuar.`});}
       const storeName=currentStore?.name??"esta tienda";
       setLastProduct(null);
       setScanFeedback({code:normalized,storeName});
@@ -836,26 +847,39 @@ export default function Home() {
       return void toast.warning("Código leído correctamente",{id:"scanner-result",description:`${normalized} no está incluido en el Excel activo de ${storeName}.`});
     }
 
-    if(activeSizeGate&&!evaluation){
+    if(activeSizeGate){
       if(!matchesExpectedMinimum(product,activeSizeGate.product,activeSizeGate.expectedSize)){if(navigator.vibrate)navigator.vibrate([70,60,70]);return void toast.warning("Escáner pausado",{id:"size-gate",description:`Debes escanear primero la talla mínima ${activeSizeGate.expectedSize} para continuar.`});}
+      if(evaluation){
+        const savedItem=await saveEvaluationProduct(product);
+        if(!savedItem)return;
+        void logActivity(product,{source:"evaluation",eventType:"SIZE_RESOLVED",expectedSize:activeSizeGate.expectedSize});
+      }else{
+        void logActivity(product);
+        void logActivity(product,{eventType:"SIZE_RESOLVED",expectedSize:activeSizeGate.expectedSize});
+      }
       updateSizeGate(null);setScanFeedback(null);setLastProduct(product);setManualCode("");toast.dismiss("size-gate");if(navigator.vibrate)navigator.vibrate(80);
-      void logActivity(product);void logActivity(product,{eventType:"SIZE_RESOLVED",expectedSize:activeSizeGate.expectedSize});
       return void toast.success("Talla menor validada",{description:`${product.article} · talla ${product.size}`});
     }
 
     setScanFeedback(null);toast.dismiss("scanner-result");setLastProduct(product);setManualCode("");
-    if(!evaluation&&validateSmallestSize){
+    if(validateSmallestSize){
       const validation=findMinimumSize(product,productCacheRef.current.values());
       if(validation.status==="not-minimum"){
-        updateSizeGate({product,expectedSize:validation.expectedSize});
+        if(evaluation){
+          const savedItem=await saveEvaluationProduct(product,validation.expectedSize);
+          if(!savedItem)return;
+          updateSizeGate({product,expectedSize:validation.expectedSize,source:"evaluation",evaluationItemId:savedItem.rowId});
+        }else{
+          updateSizeGate({product,expectedSize:validation.expectedSize,source:"scanner"});
+          void logActivity(product);
+        }
         if(navigator.vibrate)navigator.vibrate([70,60,70]);
-        void logActivity(product);
         return void toast.warning("Talla menor requerida",{id:"size-gate",description:`La talla esperada para ${product.article} · ${product.color} es ${validation.expectedSize}.`});
       }
       if(validation.status==="unknown")toast.info("Validación de talla no aplicada",{description:validation.reason});
     }
     if(navigator.vibrate)navigator.vibrate(80);
-    if(evaluation)void saveEvaluationProduct(product);else void logActivity(product);
+    if(evaluation)await saveEvaluationProduct(product);else void logActivity(product);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   },[storeId,currentStore?.name,lookupProduct,validateSmallestSize,isEvaluator,sessionUserId,updateSizeGate]);
 
@@ -963,12 +987,17 @@ export default function Home() {
     }
   }
   function stopCamera(){cameraSessionRef.current+=1;releaseCameraStream();setCameraOpen(false);}
-  function goTo(next:View){if(next==="daily"&&!canViewDaily)return;if(next==="users"&&!isOwner)return;stopCamera();setView(next);setMobileMenu(false);}
+  function goTo(next:View){if(next==="daily"&&!canViewDaily)return;if(next==="users"&&!isOwner)return;stopCamera();if(next!==view){updateSizeGate(null);toast.dismiss("size-gate");}setView(next);setMobileMenu(false);}
 
   async function registerSmallerSizeNotDisplayed(){
     const activeSizeGate=sizeGateRef.current;
     if(!activeSizeGate)return;
-    await logActivity(activeSizeGate.product,{eventType:"SIZE_NOT_DISPLAYED",expectedSize:activeSizeGate.expectedSize});
+    if(activeSizeGate.source==="evaluation"&&activeSizeGate.evaluationItemId){
+      const saved=await changeObservation(activeSizeGate.evaluationItemId,"TALLA MENOR NO EXHIBIDA",activeSizeGate.expectedSize);
+      if(!saved)return;
+    }else{
+      await logActivity(activeSizeGate.product,{eventType:"SIZE_NOT_DISPLAYED",expectedSize:activeSizeGate.expectedSize});
+    }
     const article=activeSizeGate.product.article;
     updateSizeGate(null);toast.dismiss("size-gate");if(navigator.vibrate)navigator.vibrate(80);
     toast.success("Incidencia registrada",{description:`${article}: talla menor no exhibida.`});
@@ -1033,11 +1062,12 @@ export default function Home() {
         let pending=batch;
         for(let attempt=0;attempt<3&&pending.length;attempt+=1){
           let {error}=await supabase.from("products").insert(pending);
-          if(error&&/(brand|category)/i.test(error.message)){
+          if(error&&/(brand|category|discount_percent)/i.test(error.message)){
             const compatibleBatch=pending.map((product)=>{
               const compatibleProduct={...product} as Partial<typeof product>;
               delete compatibleProduct.brand;
               delete compatibleProduct.category;
+              delete compatibleProduct.discount_percent;
               return compatibleProduct;
             });
             ({error}=await supabase.from("products").insert(compatibleBatch));
@@ -1092,14 +1122,23 @@ export default function Home() {
 
   async function addWithoutLabel(){
     const targetEvaluation=await ensureEvaluation();if(!targetEvaluation)return;
-    const {data,error}=await supabase.from("evaluation_items").insert({evaluation_id:targetEvaluation,store_id:storeId,product_id:null,barcode:null,article:"SIN CÓDIGO",description:"Producto sin identificar",color:"No especificado",size:"No especificado",style:"No especificado",amount:0,observation:"SIN ETIQUETA"}).select("id,scanned_at").single();
+    const {data,error}=await supabase.from("evaluation_items").insert({evaluation_id:targetEvaluation,store_id:storeId,product_id:null,barcode:null,article:"SIN CÓDIGO",description:"Producto sin identificar",color:"No especificado",size:"No especificado",expected_size:"",style:"No especificado",amount:0,observation:"SIN ETIQUETA"}).select("id,scanned_at").single();
     if(error)return void toast.error("No se pudo registrar el producto");
-    const product:Product={id:null,storeId,barcode:"",article:"SIN CÓDIGO",description:"Producto sin identificar",color:"No especificado",size:"No especificado",style:"No especificado",amount:0,brand:"No especificado",category:"No especificado"};
-    setEvaluationItems((items)=>[{...product,rowId:data.id,observation:"SIN ETIQUETA",scannedAt:new Date(data.scanned_at).toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})},...items]);
+    const product:Product={id:null,storeId,barcode:"",article:"SIN CÓDIGO",description:"Producto sin identificar",color:"No especificado",size:"No especificado",style:"No especificado",amount:0,discountPercent:0,brand:"No especificado",category:"No especificado"};
+    setEvaluationItems((items)=>[{...product,rowId:data.id,observation:"SIN ETIQUETA",expectedSize:"",scannedAt:new Date(data.scanned_at).toLocaleTimeString("es",{hour:"numeric",minute:"2-digit"})},...items]);
     void logActivity(product,{source:"evaluation",evaluationItemId:data.id,observation:"SIN ETIQUETA"});
     toast.success("Producto sin etiqueta registrado");
   }
-  async function changeObservation(rowId:string,observation:Observation){const previous=evaluationItems;setEvaluationItems((items)=>items.map((item)=>item.rowId===rowId?{...item,observation}:item));const {error}=await supabase.from("evaluation_items").update({observation}).eq("id",rowId);if(error){setEvaluationItems(previous);toast.error("No se guardó la observación");return false;}await supabase.from("scan_activity").update({observation}).eq("evaluation_item_id",rowId);return true;}
+  async function changeObservation(rowId:string,observation:Observation,expectedSizeOverride?:string){
+    const previous=evaluationItems;
+    const current=evaluationItems.find((item)=>item.rowId===rowId);
+    const expectedSize=observation==="TALLA MENOR NO EXHIBIDA"?(expectedSizeOverride??current?.expectedSize??""):"";
+    setEvaluationItems((items)=>items.map((item)=>item.rowId===rowId?{...item,observation,expectedSize}:item));
+    const {error}=await supabase.from("evaluation_items").update({observation,expected_size:expectedSize}).eq("id",rowId);
+    if(error){setEvaluationItems(previous);toast.error("No se guardó la observación");return false;}
+    await supabase.from("scan_activity").update({observation,expected_size:expectedSize}).eq("evaluation_item_id",rowId).eq("event_type","SCAN");
+    return true;
+  }
   async function deleteEvaluationItem(rowId:string){const {error}=await supabase.from("evaluation_items").delete().eq("id",rowId);if(error)return void toast.error("No se pudo eliminar");await supabase.from("scan_activity").delete().eq("evaluation_item_id",rowId);setEvaluationItems((items)=>items.filter((item)=>item.rowId!==rowId));}
 
   const latestScannedEvaluationItem=useMemo(()=>evaluationItems.find((item)=>item.id!==null)??null,[evaluationItems]);
@@ -1170,10 +1209,10 @@ export default function Home() {
       {view==="scanner"&&<section className="page-content scanner-layout">
         <div className="scan-panel">
           <div className="section-heading"><div><Badge className="status-badge"><span className={`status-dot ${catalogLoading?"status-dot-loading":""}`}/> {catalogLoading?"Preparando catálogo…":`Lector instantáneo · ${cachedProductCount.toLocaleString("es-ES")} productos`}</Badge><h2>Escaneo continuo</h2><p>Apunta la cámara al código. El resultado aparecerá al instante y el lector seguirá activo.</p></div><div className="store-pill"><Store size={16}/><span>{currentStore?.name}</span></div></div>
-          <div className={`size-validation-control ${validateSmallestSize?"is-active":""}`}><span><Ruler size={19}/></span><div><strong>Validar talla menor</strong><small>{validateSmallestSize?"Validación activa: el escáner comprobará la talla mínima.":"Comprueba la talla mínima del mismo artículo y color."}</small></div><div className="size-validation-toggle"><b>{validateSmallestSize?"ACTIVA":"INACTIVA"}</b><Switch className="size-validation-switch" checked={validateSmallestSize} disabled={Boolean(sizeGate)} onCheckedChange={setValidateSmallestSize} aria-label="Validar talla menor"/></div></div>
+          <div className={`size-validation-control ${validateSmallestSize?"is-active":""}`}><span><Ruler size={19}/></span><div><strong>Validar talla menor</strong><small>{validateSmallestSize?"Validación activa: el escáner comprobará la talla mínima.":"Comprueba la talla mínima del mismo artículo y color."}</small></div><div className="size-validation-toggle"><b>{validateSmallestSize?"ACTIVA":"INACTIVA"}</b><Switch className="size-validation-switch" checked={validateSmallestSize} disabled={Boolean(scannerSizeGate)} onCheckedChange={setValidateSmallestSize} aria-label="Validar talla menor"/></div></div>
           {cameraOpen?<div className="camera-stage"><video ref={videoRef} className="camera-video" muted playsInline onClick={()=>void refocusActiveCamera()} title="Toca la imagen para reenfocar"/><div className="camera-mode" aria-live="polite"><Camera size={14}/>{cameraStatus}</div><div className="scan-frame"><span/><span/><span/><span/><i/></div><button className="camera-close" onClick={stopCamera}><X size={18}/> Detener</button></div>:<button className="scanner-target" onClick={()=>startCamera(false)}><div className="scanner-corners"><span/><span/><span/><span/></div><div className="scanner-icon"><Barcode size={48}/></div><strong>Toca para activar la cámara</strong><small>Cámara principal 1× · EAN, UPC y Code 128</small></button>}
         </div>
-        <div className={`result-panel ${lastProduct?(sizeGate?"result-blocked":""):scanFeedback?"result-missing":"result-empty"}`}>{lastProduct?<><div className="price-block"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className="result-success"><CheckCircle2 size={20}/><span>{sizeGate?"Producto identificado · falta validar talla":"Producto encontrado"}</span><small>Último escaneo</small></div>{lastProduct.storeId===storeId&&transfers.articles.has(lastProduct.article.trim())&&<div className="transfer-alert" role="status"><ArrowRightLeft size={23}/><div><strong>Artículo de traslado</strong><p>Este artículo figura en los traslados activos de {currentStore?.name}.</p></div></div>}{transfers.error&&<p className="transfers-error" role="status">No se pudo comprobar si este artículo es de traslado.</p>}<div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO DE BARRAS · {lastProduct.barcode}</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div className={sizeGate?"size-alert":""}><span>TALLA</span><strong>{lastProduct.size}</strong>{sizeGate&&<small>Esperada: {sizeGate.expectedSize}</small>}</div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div>{sizeGate?<div className="size-gate-card" role="alert"><TriangleAlert size={23}/><div><strong>Escáner pausado por validación de talla</strong><p>Debes escanear primero la talla mínima <b>{sizeGate.expectedSize}</b> para continuar.</p></div><Button onClick={()=>void registerSmallerSizeNotDisplayed()} variant="outline"><Ruler size={17}/> Talla menor no exhibida</Button></div>:<div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div>}</>:scanFeedback?<div className="missing-product"><div className="missing-head"><Barcode size={21}/><div><strong>Código leído correctamente</strong><span>El lector y la cámara están funcionando</span></div></div><div className="missing-code"><span>CÓDIGO CAPTURADO</span><strong>{scanFeedback.code}</strong></div><div className="missing-copy"><h3>Esta prenda no está en el Excel activo</h3><p>No es posible mostrar artículo, color, talla, estilo ni precio porque el archivo de <strong>{scanFeedback.storeName}</strong> no contiene este código.</p></div><div className="missing-note"><FileSpreadsheet size={20}/><span>Carga el inventario que incluya esta prenda o comprueba que corresponda a la tienda seleccionada.</span></div></div>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div>
+        <div className={`result-panel ${lastProduct?(scannerSizeGate?"result-blocked":""):scanFeedback?"result-missing":"result-empty"}`}>{lastProduct?<><div className="price-block"><div className="price-value"><span>MONTO A PAGAR</span><strong>{money.format(lastProduct.amount)}</strong><small>Precio individual en dólares</small></div><div className={`discount-value ${lastProduct.discountPercent>0?"has-discount":""}`}><span>DESCUENTO</span><strong>{percentage.format(lastProduct.discountPercent)}%</strong><small>{lastProduct.discountPercent>0?"Según el Excel activo":"Sin descuento"}</small></div></div><div className="result-success"><CheckCircle2 size={20}/><span>{scannerSizeGate?"Producto identificado · falta validar talla":"Producto encontrado"}</span><small>Último escaneo</small></div>{lastProduct.storeId===storeId&&transfers.articles.has(lastProduct.article.trim())&&<div className="transfer-alert" role="status"><ArrowRightLeft size={23}/><div><strong>Artículo de traslado</strong><p>Este artículo figura en los traslados activos de {currentStore?.name}.</p></div></div>}{transfers.error&&<p className="transfers-error" role="status">No se pudo comprobar si este artículo es de traslado.</p>}<div className="result-product"><div className="product-icon"><PackageSearch size={36}/></div><div><span>CÓDIGO DE BARRAS · {lastProduct.barcode}</span><h2>{lastProduct.article}</h2><p>{lastProduct.description}</p></div></div><div className="product-grid"><div><span>COLOR</span><strong>{lastProduct.color}</strong></div><div className={scannerSizeGate?"size-alert":""}><span>TALLA</span><strong>{lastProduct.size}</strong>{scannerSizeGate&&<small>Esperada: {scannerSizeGate.expectedSize}</small>}</div><div className="wide"><span>ESTILO</span><strong>{lastProduct.style}</strong></div></div>{scannerSizeGate?<div className="size-gate-card" role="alert"><TriangleAlert size={23}/><div><strong>Escáner pausado por validación de talla</strong><p>Debes escanear primero la talla mínima <b>{scannerSizeGate.expectedSize}</b> para continuar.</p></div><Button onClick={()=>void registerSmallerSizeNotDisplayed()} variant="outline"><Ruler size={17}/> Talla menor no exhibida</Button></div>:<div className="auto-note"><Camera size={18}/><p><strong>Listo para el siguiente producto</strong><span>No necesitas presionar ningún botón.</span></p><b/></div>}</>:scanFeedback?<div className="missing-product"><div className="missing-head"><Barcode size={21}/><div><strong>Código leído correctamente</strong><span>El lector y la cámara están funcionando</span></div></div><div className="missing-code"><span>CÓDIGO CAPTURADO</span><strong>{scanFeedback.code}</strong></div><div className="missing-copy"><h3>Esta prenda no está en el Excel activo</h3><p>No es posible mostrar artículo, color, talla, estilo ni precio porque el archivo de <strong>{scanFeedback.storeName}</strong> no contiene este código.</p></div><div className="missing-note"><FileSpreadsheet size={20}/><span>Carga el inventario que incluya esta prenda o comprueba que corresponda a la tienda seleccionada.</span></div></div>:<div className="empty-product"><PackageSearch size={44}/><h3>Esperando un producto</h3><p>El resultado aparecerá aquí después del primer escaneo.</p></div>}</div>
         <div className="manual-entry scanner-manual"><div><i/><span>o introduce el código</span><i/></div><div className="manual-controls"><Input value={manualCode} onChange={(event)=>setManualCode(event.target.value)} onKeyDown={(event)=>event.key==="Enter"&&void registerCode(manualCode)} placeholder="Ej. 9880007937124" inputMode="numeric"/><Button onClick={()=>void registerCode(manualCode)}>Verificar</Button></div></div>
       </section>}
 
@@ -1184,21 +1223,23 @@ export default function Home() {
             <Button onClick={()=>startCamera(true)} disabled={cameraOpen}><Camera size={17}/> {cameraOpen?"Escaneo en curso":"Escanear continuamente"}</Button>
           </div>
         </div>
+        <div className={`size-validation-control evaluation-size-validation ${validateSmallestSize?"is-active":""}`}><span><Ruler size={19}/></span><div><strong>Validar talla menor</strong><small>{validateSmallestSize?"Activa: comprobará la talla mínima y permitirá registrar si no está exhibida.":"Comprueba la talla mínima del mismo artículo y color durante la evaluación."}</small></div><div className="size-validation-toggle"><b>{validateSmallestSize?"ACTIVA":"INACTIVA"}</b><Switch className="size-validation-switch" checked={validateSmallestSize} disabled={Boolean(evaluationSizeGate)} onCheckedChange={setValidateSmallestSize} aria-label="Validar talla menor en Evaluación"/></div></div>
         <div className="evaluation-workbench">
           <div className="incident-actions evaluation-quick-actions">
             <Button className={`incident-button ${latestScannedEvaluationItem?.observation==="PRECIO ERRÓNEO"?"is-active":""}`} variant="outline" disabled={!latestScannedEvaluationItem} aria-pressed={latestScannedEvaluationItem?.observation==="PRECIO ERRÓNEO"} onClick={()=>void markLatestScannedProduct("PRECIO ERRÓNEO")}><CircleDollarSign size={18}/> Precio erróneo</Button>
             <Button className={`incident-button ${latestScannedEvaluationItem?.observation==="MAL ETIQUETADO"?"is-active":""}`} variant="outline" disabled={!latestScannedEvaluationItem} aria-pressed={latestScannedEvaluationItem?.observation==="MAL ETIQUETADO"} onClick={()=>void markLatestScannedProduct("MAL ETIQUETADO")}><Tags size={18}/> Mal etiquetado</Button>
             <Button className="incident-button without-label-button" variant="outline" onClick={addWithoutLabel}><Hand size={18}/> Sin etiqueta</Button>
           </div>
+        {evaluationSizeGate&&<div className="size-gate-card evaluation-size-gate" role="alert"><TriangleAlert size={23}/><div><strong>Falta validar la talla menor</strong><p>Escanea la talla <b>{evaluationSizeGate.expectedSize}</b> de {evaluationSizeGate.product.article} o registra que no está exhibida.</p></div><Button onClick={()=>void registerSmallerSizeNotDisplayed()} variant="outline"><Ruler size={17}/> Talla menor no exhibida</Button></div>}
         {cameraOpen&&<div className="evaluation-camera"><video ref={videoRef} muted playsInline onClick={()=>void refocusActiveCamera()} title="Toca la imagen para reenfocar"/><div><strong>{cameraStatus}</strong><span>Los productos se agregan y guardan automáticamente.</span></div><Button variant="outline" onClick={stopCamera}>Detener</Button></div>}
         </div>
         <div className="incident-panel">
-          <div className="incident-copy"><span>ÚLTIMO PRODUCTO</span>{latestScannedEvaluationItem?<><h3>{latestScannedEvaluationItem.description} · {latestScannedEvaluationItem.article}</h3><div className="evaluation-product-details"><span>Color <b>{latestScannedEvaluationItem.color}</b></span><span>Talla <b>{latestScannedEvaluationItem.size}</b></span><span>Estilo <b>{latestScannedEvaluationItem.style}</b></span></div><strong className="incident-price">{money.format(latestScannedEvaluationItem.amount)}</strong><p>Observación del último escaneo</p></>:<p>Escanea un producto para poder marcar una incidencia.</p>}</div>
+          <div className="incident-copy"><span>ÚLTIMO PRODUCTO</span>{latestScannedEvaluationItem?<><h3>{latestScannedEvaluationItem.description} · {latestScannedEvaluationItem.article}</h3><div className="evaluation-product-details"><span>Color <b>{latestScannedEvaluationItem.color}</b></span><span>Talla <b>{latestScannedEvaluationItem.size}</b></span>{latestScannedEvaluationItem.expectedSize&&<span>Menor esperada <b>{latestScannedEvaluationItem.expectedSize}</b></span>}<span>Estilo <b>{latestScannedEvaluationItem.style}</b></span></div><strong className="incident-price">{money.format(latestScannedEvaluationItem.amount)}</strong><p>Observación del último escaneo</p></>:<p>Escanea un producto para poder marcar una incidencia.</p>}</div>
           {latestScannedEvaluationItem&&<div className="incident-selector"><span>Observación</span><Select value={latestScannedEvaluationItem.observation} onValueChange={(value)=>void changeObservation(latestScannedEvaluationItem.rowId,value as Observation)}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></div>}
 
         </div>
         <div className="summary-grid"><div className="summary-total"><span className="summary-icon" aria-hidden="true"><ClipboardCheck size={20}/></span><span>EVALUADOS</span><strong>{evaluationItems.length}</strong></div>{summary.map((item)=><div key={item.observation}><EvaluationSummaryIcon observation={item.observation}/><span>{item.observation}</span><strong>{item.count}</strong></div>)}</div>
-        <div className="data-card"><div className="data-card-head"><div><strong>Productos evaluados</strong><span>{incidentItems.length} piezas con incidencias</span></div><Button variant="outline" onClick={exportEvaluation} disabled={!evaluationItems.length}><Download size={17}/> Descargar Word editable</Button></div><div className="evaluation-table-wrap"><table className="evaluation-table"><thead><tr><th>Código / artículo</th><th>Descripción</th><th>Detalles</th><th>Monto</th><th>Observación</th><th/></tr></thead><tbody>{incidentItems.length?incidentItems.map((item)=><tr key={item.rowId}><td><strong>{item.article}</strong><span>{item.scannedAt}</span></td><td>{item.description}</td><td>{item.color} · {item.size}</td><td><strong>{money.format(item.amount)}</strong></td><td><Select value={item.observation} onValueChange={(value)=>void changeObservation(item.rowId,value as Observation)}><SelectTrigger className="observation"><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></td><td><button className="delete-row" onClick={()=>void deleteEvaluationItem(item.rowId)} aria-label={`Eliminar ${item.article}`}><X size={16}/></button></td></tr>):<tr><td colSpan={6} className="empty-table">No hay piezas con incidencias en esta evaluación.</td></tr>}</tbody></table></div></div>
+        <div className="data-card"><div className="data-card-head"><div><strong>Productos evaluados</strong><span>{incidentItems.length} piezas con incidencias</span></div><Button variant="outline" onClick={exportEvaluation} disabled={!evaluationItems.length}><Download size={17}/> Descargar Word editable</Button></div><div className="evaluation-table-wrap"><table className="evaluation-table"><thead><tr><th>Código / artículo</th><th>Descripción</th><th>Detalles</th><th>Monto</th><th>Observación</th><th/></tr></thead><tbody>{incidentItems.length?incidentItems.map((item)=><tr key={item.rowId}><td><strong>{item.article}</strong><span>{item.scannedAt}</span></td><td>{item.description}</td><td>{item.color} · {item.size}{item.expectedSize?` · menor esperada ${item.expectedSize}`:""}</td><td><strong>{money.format(item.amount)}</strong></td><td><Select value={item.observation} onValueChange={(value)=>void changeObservation(item.rowId,value as Observation)}><SelectTrigger className="observation"><SelectValue/></SelectTrigger><SelectContent>{OBSERVATIONS.map((observation)=><SelectItem key={observation} value={observation}>{observation}</SelectItem>)}</SelectContent></Select></td><td><button className="delete-row" onClick={()=>void deleteEvaluationItem(item.rowId)} aria-label={`Eliminar ${item.article}`}><X size={16}/></button></td></tr>):<tr><td colSpan={6} className="empty-table">No hay piezas con incidencias en esta evaluación.</td></tr>}</tbody></table></div></div>
       </section>}
 
       {view==="daily"&&canViewDaily&&<section className="page-content daily-page">
@@ -1215,7 +1256,7 @@ export default function Home() {
           {dailyLoading?<div className="daily-loading"><LoaderCircle className="spin" size={28}/><span>Cargando actividad del día…</span></div>:<>
             <div className="daily-detail">
               <div className="data-card-head daily-detail-head"><div><strong>{showDailyDetail?"Detalle completo del día":"Fallos encontrados"}</strong><span>{showDailyDetail?`${dailyRows.length} registros`:`${dailyIncidentRows.length} incidencias`} · {dailyScopeName}</span></div><div className="daily-detail-actions"><Badge variant="outline">{dailyDate}</Badge><Button variant="outline" onClick={()=>setShowDailyDetail((current)=>!current)}>{showDailyDetail?<EyeOff size={17}/>:<Eye size={17}/>} {showDailyDetail?"Ver solo fallos":"Ver todo detallado"}</Button></div></div>
-              <div className="daily-list">{displayedDailyRows.length?displayedDailyRows.map((row)=><article key={row.id} className={`daily-row daily-row-${row.eventType.toLowerCase()} ${isActivityIncident(row)?"daily-row-incident":""}`}><div className="daily-row-icon">{row.eventType==="SIZE_NOT_DISPLAYED"?<Ruler size={20}/>:<Barcode size={20}/>}</div><div className="daily-row-product"><strong>{row.eventType==="SIZE_NOT_DISPLAYED"?"Talla menor no exhibida":row.description||row.article}</strong><span>{row.article} · {row.color} · talla {row.size}{row.expectedSize?` · esperada ${row.expectedSize}`:""}</span><small>Marca: {row.brand} · Cat 1: {row.category}</small></div><div className="daily-row-person"><strong>{row.employeeName}</strong><span>{row.storeName} · {new Date(row.createdAt).toLocaleTimeString("es-VE",{hour:"numeric",minute:"2-digit"})}</span><small>{row.observation??(row.eventType==="SCAN"?"Sin incidencias":"Validación de talla")}</small></div></article>):<div className="empty-table">{showDailyDetail?"No hay actividad registrada en esta fecha.":"Excelente: no se encontraron fallos en esta fecha."}</div>}</div>
+              <div className="daily-list">{displayedDailyRows.length?displayedDailyRows.map((row)=><article key={row.id} className={`daily-row daily-row-${row.eventType.toLowerCase()} ${isActivityIncident(row)?"daily-row-incident":""}`}><div className="daily-row-icon">{isSmallerSizeIncident(row)?<Ruler size={20}/>:<Barcode size={20}/>}</div><div className="daily-row-product"><strong>{isSmallerSizeIncident(row)?"Talla menor no exhibida":row.description||row.article}</strong><span>{row.article} · {row.color} · talla {row.size}{row.expectedSize?` · esperada ${row.expectedSize}`:""}</span><small>Marca: {row.brand} · Cat 1: {row.category}</small></div><div className="daily-row-person"><strong>{row.employeeName}</strong><span>{row.storeName} · {new Date(row.createdAt).toLocaleTimeString("es-VE",{hour:"numeric",minute:"2-digit"})}</span><small>{row.observation??(row.eventType==="SCAN"?"Sin incidencias":"Validación de talla")}</small></div></article>):<div className="empty-table">{showDailyDetail?"No hay actividad registrada en esta fecha.":"Excelente: no se encontraron fallos en esta fecha."}</div>}</div>
             </div>
             <div className="daily-groups"><div className="daily-group-card"><h3><Users size={19}/> Por empleado</h3>{dailySummary.byEmployee.length?dailySummary.byEmployee.map((item)=><div key={item.key}><span>{item.label}<small className="employee-store-name">{item.storeName}</small></span><b>{item.scans} escaneos</b><small>{item.incidents} incidencias</small></div>):<p>Sin actividad para esta fecha.</p>}</div><div className="daily-group-card"><h3><Boxes size={19}/> Por Marca</h3>{dailySummary.byBrand.length?dailySummary.byBrand.map((item)=><div key={item.label}><span>{item.label}</span><b>{item.scans}</b><small>{item.incidents} incidencias</small></div>):<p>Sin datos de Marca.</p>}</div><div className="daily-group-card"><h3><FileSpreadsheet size={19}/> Por Cat 1</h3>{dailySummary.byCategory.length?dailySummary.byCategory.map((item)=><div key={item.label}><span>{item.label}</span><b>{item.scans}</b><small>{item.incidents} incidencias</small></div>):<p>Sin datos de Cat 1.</p>}</div></div>
           </>}
@@ -1225,7 +1266,7 @@ export default function Home() {
 
       {view==="catalog"&&<section className="page-content catalog-page"><div className="catalog-intro"><div className="catalog-icon"><FileSpreadsheet size={30}/></div><div><Badge variant="outline">Inventario independiente</Badge><h2>Excel de {currentStore?.name}</h2><p>Este archivo solo modifica los productos y precios de la tienda activa. Las demás tiendas permanecerán sin cambios.</p></div></div><div className="catalog-grid"><div className={`upload-card ${uploading?"uploading":""}`} aria-live="polite" aria-busy={Boolean(uploading)}>{uploading?<><div className="excel-uploading-icon"><ExcelDocumentIcon/><LoaderCircle className="spin" size={22}/></div><strong>{uploadLabel}</strong><span className="upload-file-name">{uploading.fileName}</span><div className="upload-progress-copy"><span>{uploadLabel}</span><strong>{uploadPercent}%</strong></div><div className="upload-progress"><span style={{width:`${uploadPercent}%`}}/></div><small>No cierres esta pantalla hasta que aparezca la confirmación</small></>:<><ExcelDocumentIcon/><strong>Cargar o reemplazar archivo</strong><span className="upload-format">Formato XLSX o XLS · Máximo 20 MB</span><label className="upload-select-button upload-native-picker"><Upload size={19}/><span>Seleccionar Excel</span><input ref={fileInputRef} disabled={transfersBusy} type="file" aria-label="Seleccionar archivo Excel" onClick={()=>setExcelFileActivity("picking")} onInput={handleExcelSelection} onChange={handleExcelSelection}/></label><small className="sr-only">Elige el inventario de esta tienda; la carga comenzará automáticamente.</small></>}</div><div className="catalog-status"><h2>Inventario activo</h2><div className="catalog-file-row"><ExcelDocumentIcon size="small"/><div><h3>{catalogMeta?.fileName??"No se ha cargado un archivo"}</h3><Badge className={catalogMeta?"active-catalog":"empty-catalog"}>{catalogMeta?<><Check size={13}/> Actualizado</> :"Sin inventario"}</Badge></div></div><div className="catalog-active-detail"><PackageSearch size={20}/><span>{(catalogMeta?.rowCount??0).toLocaleString("es-ES")} productos</span></div><div className="catalog-active-detail"><Clock3 size={20}/><span>Última actualización: {formatCatalogUpdatedAt(catalogMeta?.activatedAt)}</span></div><div className="catalog-meta" aria-hidden="true"><div><span>Tienda</span><strong>{currentStore?.name}</strong></div><div><span>Alcance</span><strong>Solo esta tienda</strong></div></div></div></div>{uploadFeedback&&<div className={`upload-feedback upload-feedback-${uploadFeedback.kind}`} role={uploadFeedback.kind==="error"?"alert":"status"}>{uploadFeedback.kind==="success"?<CheckCircle2 size={22}/>:<X size={22}/>}<div><strong>{uploadFeedback.title}</strong><p>{uploadFeedback.message}</p>{uploadFeedback.kind==="error"&&retryUploadFile&&<Button className="upload-retry-button" type="button" variant="outline" disabled={Boolean(uploading)} onClick={()=>void importExcel(retryUploadFile)}><RefreshCw size={15}/> Reintentar carga</Button>}</div></div>}<ActiveTransfers key={`${sessionUserId}:${storeId}`} storeId={storeId} userId={sessionUserId} storeName={currentStore?.name??"esta tienda"} state={transfers} inventoryBusy={Boolean(uploading)} onBusyChange={setTransfersBusy}/><div className="safety-note"><ShieldCheck size={22}/><div><strong>El inventario de esta tienda no modifica las demás sucursales.</strong><p className="sr-only">Importación segura por tienda. El catálogo de una sucursal nunca modifica el de las demás. La versión anterior queda conservada.</p></div></div></section>}
 
-      {view==="users"&&isOwner&&<section className="page-content users-page"><div className="users-intro"><div><Badge className="status-badge"><ShieldCheck size={14}/> Administración exclusiva</Badge><h2>Usuarios y permisos</h2><p>Solo Romer puede asignar funciones, cambiar tiendas y autorizar el acceso.</p></div><div className="users-actions"><Button variant="outline" onClick={()=>void loadManagedProfiles()} disabled={usersLoading||Boolean(savingUserId)}><RefreshCw className={usersLoading?"spin":""} size={16}/> Actualizar</Button><Button className="primary-action" onClick={()=>{setNewUser((current)=>({...current,storeId:current.storeId||stores[0]?.id||""}));setUserDialogOpen(true);}}><UserPlus size={17}/> Agregar usuario</Button></div></div><div className="user-summary"><div><span className="user-summary-icon" aria-hidden="true"><Users size={20}/></span><span>EMPLEADOS</span><strong>{userStats.employees}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><Building2 size={20}/></span><span>GERENTES</span><strong>{userStats.managers}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><ShieldCheck size={20}/></span><span>SUPERVISORES</span><strong>{userStats.supervisors}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><Clock3 size={20}/></span><span>PENDIENTES</span><strong>{userStats.pending}</strong></div></div>{usersError?<div className="users-setup"><div className="pending-icon"><Users size={32}/></div><h3>Falta activar el control propietario</h3><p>{usersError} Ejecuta el nuevo SQL de “Control propietario” en Supabase y luego pulsa Actualizar.</p></div>:usersLoading?<div className="users-loading"><LoaderCircle className="spin" size={28}/><span>Cargando cuentas registradas…</span></div>:<div className="users-card"><div className="data-card-head"><div><strong>Cuentas registradas</strong><span>{managedProfiles.length} usuarios bajo el control de Romer</span></div><Badge variant="outline">Asignación por tienda</Badge></div><div className="users-table-wrap"><table className="users-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Tienda asignada</th><th>Acceso</th></tr></thead><tbody>{managedProfiles.length?managedProfiles.map((item)=><tr key={item.id}><td><div className="managed-user"><div className="managed-avatar">{(item.full_name||item.email||"U").split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("")}</div><div><strong>{item.full_name||"Nombre no indicado"}</strong><span>{item.email||`Cuenta ${item.id.slice(0,8)}`}</span>{item.is_owner&&<Badge className="self-badge">Propietario</Badge>}</div></div></td><td><Select value={item.role} disabled={item.is_owner||Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{role:value as RoleCode})}><SelectTrigger className="user-role-select"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></td><td>{item.is_owner?<div className="all-stores"><Store size={15}/> Control de todas</div>:<Select value={item.store_id??undefined} disabled={Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{store_id:value})}><SelectTrigger className="user-store-select"><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select>}</td><td><div className="access-toggle"><Switch checked={item.is_active} disabled={item.is_owner||Boolean(savingUserId)} onCheckedChange={(checked)=>void updateManagedProfile(item.id,{is_active:checked})} aria-label={`Acceso de ${item.full_name||item.email||"usuario"}`}/><span className={item.is_active?"access-active":"access-inactive"}>{savingUserId===item.id?"Guardando…":item.is_active?"Activo":"Desactivado"}</span></div></td></tr>):<tr><td colSpan={4} className="empty-table">Aún no hay cuentas registradas.</td></tr>}</tbody></table></div></div>}
+      {view==="users"&&isOwner&&<section className="page-content users-page"><div className="users-intro"><div><Badge className="status-badge"><ShieldCheck size={14}/> Administración exclusiva</Badge><h2>Usuarios y permisos</h2><p>Solo Romer puede asignar funciones, cambiar tiendas y autorizar el acceso.</p></div><div className="users-actions"><Button variant="outline" onClick={()=>void loadManagedProfiles()} disabled={usersLoading||Boolean(savingUserId)}><RefreshCw className={usersLoading?"spin":""} size={16}/> Actualizar</Button><Button className="primary-action" onClick={()=>{setNewUser((current)=>({...current,storeId:current.storeId||stores[0]?.id||""}));setUserDialogOpen(true);}}><UserPlus size={17}/> Agregar usuario</Button></div></div><div className="user-summary"><div><span className="user-summary-icon" aria-hidden="true"><Users size={20}/></span><span>EMPLEADOS</span><strong>{userStats.employees}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><Building2 size={20}/></span><span>GERENTES</span><strong>{userStats.managers}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><ShieldCheck size={20}/></span><span>SUPERVISORES</span><strong>{userStats.supervisors}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><Clock3 size={20}/></span><span>PENDIENTES</span><strong>{userStats.pending}</strong></div></div>{usersError?<div className="users-setup"><div className="pending-icon"><Users size={32}/></div><h3>Falta activar el control propietario</h3><p>{usersError} Ejecuta el nuevo SQL de “Control propietario” en Supabase y luego pulsa Actualizar.</p></div>:usersLoading?<div className="users-loading"><LoaderCircle className="spin" size={28}/><span>Cargando cuentas registradas…</span></div>:<div className="users-card"><div className="data-card-head"><div><strong>Cuentas registradas</strong><span>{managedProfiles.length} usuarios bajo el control de Romer</span></div><Badge variant="outline">Asignación por tienda</Badge></div><div className="users-table-wrap"><table className="users-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Tienda asignada</th><th>Acceso</th></tr></thead><tbody>{managedProfiles.length?managedProfiles.map((item)=><tr key={item.id}><td><div className="managed-user"><div className="managed-avatar">{(item.full_name||item.email||"U").split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("")}</div><div><strong>{item.full_name||"Nombre no indicado"}</strong><span>{item.email||`Cuenta ${item.id.slice(0,8)}`}</span>{item.is_owner&&<Badge className="self-badge">Propietario</Badge>}</div></div></td><td><Select value={item.role} disabled={item.is_owner||Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{role:value as RoleCode})}><SelectTrigger className="user-role-select"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></td><td>{item.is_owner?<div className="all-stores"><Store size={15}/> Control de todas</div>:item.role==="supervisor"?<div className="all-stores supervisor-stores"><Store size={15}/> Tiendas asignadas por correo</div>:<Select value={item.store_id??undefined} disabled={Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{store_id:value})}><SelectTrigger className="user-store-select"><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select>}</td><td><div className="access-toggle"><Switch checked={item.is_active} disabled={item.is_owner||Boolean(savingUserId)} onCheckedChange={(checked)=>void updateManagedProfile(item.id,{is_active:checked})} aria-label={`Acceso de ${item.full_name||item.email||"usuario"}`}/><span className={item.is_active?"access-active":"access-inactive"}>{savingUserId===item.id?"Guardando…":item.is_active?"Activo":"Desactivado"}</span></div></td></tr>):<tr><td colSpan={4} className="empty-table">Aún no hay cuentas registradas.</td></tr>}</tbody></table></div></div>}
         <Dialog open={userDialogOpen} onOpenChange={(open)=>!creatingUser&&setUserDialogOpen(open)}><DialogContent className="user-dialog"><DialogHeader><div className="dialog-icon"><Plus size={21}/></div><DialogTitle>Agregar nuevo usuario</DialogTitle><DialogDescription>Romer define desde aquí quién puede entrar, su función y la tienda correspondiente.</DialogDescription></DialogHeader><form className="create-user-form" onSubmit={createManagedUser}><label>Nombre completo<Input value={newUser.fullName} onChange={(event)=>setNewUser({...newUser,fullName:event.target.value})} placeholder="Nombre y apellido" required/></label><label>Correo electrónico<Input value={newUser.email} onChange={(event)=>setNewUser({...newUser,email:event.target.value})} type="email" placeholder="empleado@empresa.com" required/></label><label>Contraseña temporal<Input value={newUser.password} onChange={(event)=>setNewUser({...newUser,password:event.target.value})} type="password" minLength={8} placeholder="Mínimo 8 caracteres" required/></label><div className="create-user-grid"><label>Función<Select value={newUser.role} onValueChange={(value)=>setNewUser({...newUser,role:value as RoleCode})}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></label><label>Tienda<Select value={newUser.storeId} onValueChange={(value)=>setNewUser({...newUser,storeId:value})}><SelectTrigger><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select></label></div><div className="create-user-note"><Mail size={17}/><span>La persona recibirá un correo de confirmación antes de poder iniciar sesión.</span></div><DialogFooter><Button type="button" variant="outline" onClick={()=>setUserDialogOpen(false)} disabled={creatingUser}>Cancelar</Button><Button className="primary-action" type="submit" disabled={creatingUser}>{creatingUser?<><LoaderCircle className="spin" size={17}/> Creando…</>:<><UserPlus size={17}/> Crear usuario</>}</Button></DialogFooter></form></DialogContent></Dialog>
       </section>}
     </main>

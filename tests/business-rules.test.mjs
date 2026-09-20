@@ -55,8 +55,8 @@ test("imports the physical identifier only from the Código barras column", asyn
   const { parseCatalogWorkbook } = await vite.ssrLoadModule("/app/lib/catalog-import.ts");
   const workbook = utils.book_new();
   const sheet = utils.aoa_to_sheet([
-    ["Artículo", "Descripción", "Color", "Tamaño", "Estilo", "Código barras", "Monto a Pagar", "Marca", "Cat 1"],
-    ["PRENDA-01", "Camisa", "AZUL", "M", "CASUAL", "0012345678901", 19.95, "Canaima", "Camisas"],
+    ["Artículo", "Descripción", "Color", "Tamaño", "Estilo", "Código barras", "Monto a Pagar", "Descuento %", "Marca", "Cat 1"],
+    ["PRENDA-01", "Camisa", "AZUL", "M", "CASUAL", "0012345678901", 19.95, "15%", "Canaima", "Camisas"],
   ]);
   utils.book_append_sheet(workbook, sheet, "Inventario");
 
@@ -64,8 +64,22 @@ test("imports the physical identifier only from the Código barras column", asyn
   assert.equal(parsed.products.length, 1);
   assert.equal(parsed.products[0].barcode, "0012345678901");
   assert.equal(parsed.products[0].article, "PRENDA-01");
+  assert.equal(parsed.products[0].discount_percent, 15);
   assert.equal(parsed.products[0].brand, "Canaima");
   assert.equal(parsed.products[0].category, "Camisas");
+});
+
+test("defaults missing discounts to zero and bounds imported percentages", async () => {
+  const { parseCatalogWorkbook } = await vite.ssrLoadModule("/app/lib/catalog-import.ts");
+  const workbook = utils.book_new();
+  utils.book_append_sheet(workbook, utils.aoa_to_sheet([
+    ["Código barras", "Monto a Pagar", "Descuento %"],
+    ["001", 10, "12,5%"],
+    ["002", 20, 140],
+    ["003", 30, ""],
+  ]), "Inventario");
+
+  assert.deepEqual(parseCatalogWorkbook(workbook).products.map((product) => product.discount_percent), [12.5, 100, 0]);
 });
 
 test("rejects Código, Artículo and SKU as barcode substitutes", async () => {
@@ -112,6 +126,7 @@ test("derives Sin incidencias from the complete evaluation total", async () => {
     ...Array.from({ length: 8 }, () => ({ observation: "PRECIO ERRÓNEO" })),
     ...Array.from({ length: 5 }, () => ({ observation: "MAL ETIQUETADO" })),
     ...Array.from({ length: 2 }, () => ({ observation: "SIN ETIQUETA" })),
+    ...Array.from({ length: 3 }, () => ({ observation: "TALLA MENOR NO EXHIBIDA" })),
   ];
 
   assert.deepEqual(summarizeEvaluation(items), [
@@ -119,6 +134,7 @@ test("derives Sin incidencias from the complete evaluation total", async () => {
     { observation: "PRECIO ERRÓNEO", count: 8 },
     { observation: "MAL ETIQUETADO", count: 5 },
     { observation: "SIN ETIQUETA", count: 2 },
+    { observation: "TALLA MENOR NO EXHIBIDA", count: 3 },
   ]);
 });
 
@@ -151,17 +167,19 @@ test("summarizes daily activity by incidents, employee, Marca and Cat 1", async 
     { ...base, eventType:"SCAN", observation:"PRECIO ERRÓNEO" },
     { ...base, id:"2", eventType:"SCAN", observation:null },
     { ...base, id:"3", eventType:"SIZE_NOT_DISPLAYED", observation:null, expectedSize:"S" },
+    { ...base, id:"4", eventType:"SCAN", observation:"TALLA MENOR NO EXHIBIDA", expectedSize:"S" },
   ]);
-  assert.equal(summary.totalScans, 2);
-  assert.equal(summary.incidents, 2);
+  assert.equal(summary.totalScans, 3);
+  assert.equal(summary.incidents, 3);
   assert.equal(summary.priceErrors, 1);
-  assert.equal(summary.smallerSizeNotDisplayed, 1);
-  assert.deepEqual(summary.byBrand[0], { label:"Canaima", scans:2, incidents:2 });
+  assert.equal(summary.smallerSizeNotDisplayed, 2);
+  assert.deepEqual(summary.byBrand[0], { label:"Canaima", scans:3, incidents:3 });
   assert.deepEqual(summarizeActivityByStore([
     { storeId:"s1", eventType:"SCAN", observation:"PRECIO ERRÓNEO" },
     { storeId:"s1", eventType:"SCAN", observation:null },
+    { storeId:"s1", eventType:"SCAN", observation:"TALLA MENOR NO EXHIBIDA" },
   ], [{ id:"s1", name:"Tienda" }])[0], {
-    storeId:"s1", storeName:"Tienda", scans:2, incidents:1, priceErrors:1, mislabeled:0, withoutLabel:0, smallerSizeNotDisplayed:0,
+    storeId:"s1", storeName:"Tienda", scans:3, incidents:2, priceErrors:1, mislabeled:0, withoutLabel:0, smallerSizeNotDisplayed:1,
   });
 });
 
@@ -289,18 +307,22 @@ test("keeps public registration store-bound and always employee-controlled", asy
   assert.match(migration, /is_owner\s*=\s*false/);
 });
 
-test("reserves user administration for Romer and cross-store work for supervisors", async () => {
+test("reserves user administration for Romer and scopes every role to allowed stores", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const migration = await readFile(new URL("../SUPABASE_CAMBIOS_PRIORITARIOS.sql", import.meta.url), "utf8");
+  const ownerMigration = await readFile(new URL("../SUPABASE_CAMBIOS_PRIORITARIOS.sql", import.meta.url), "utf8");
+  const accessMigration = await readFile(new URL("../CONFIGURAR_ACCESOS_DESCUENTO_TALLA_20260920.sql", import.meta.url), "utf8");
 
   assert.match(page, /const canSwitchStores = Boolean\(isOwner \|\| profile\?\.role === "supervisor"\)/);
   assert.match(page, /const canViewAllDailyStores = canSwitchStores/);
+  assert.match(page, /const isEvaluator = Boolean\(profile && \["employee", "manager", "supervisor"\]\.includes\(profile\.role\)\)/);
   assert.match(page, /supabase\.rpc\("owner_update_user"/);
   assert.doesNotMatch(page, /canSwitchStores = Boolean\([^\n]*manager/);
-  assert.match(migration, /if not public\.current_user_is_owner\(\) then/);
-  assert.match(migration, /p\.role::text = 'supervisor'/);
-  assert.match(migration, /p\.store_id = target_store and p\.role::text = 'manager'/);
-  assert.match(migration, /requester\.role::text <> 'supervisor'/);
+  assert.match(ownerMigration, /if not public\.current_user_is_owner\(\) then/);
+  assert.match(accessMigration, /create table if not exists public\.supervisor_store_access/);
+  assert.match(accessMigration, /profile\.role::text = 'supervisor'\s+and exists/);
+  assert.match(accessMigration, /profile\.role::text in \('employee', 'manager'\)\s+and profile\.store_id = target_store/);
+  assert.match(accessMigration, /if not public\.current_user_can_access_store\(target_store\) then/);
+  assert.doesNotMatch(accessMigration, /or profile\.role::text = 'supervisor'\s+or/);
 });
 
 test("blocks every unrelated barcode until the exact minimum size is scanned", async () => {
@@ -309,12 +331,16 @@ test("blocks every unrelated barcode until the exact minimum size is scanned", a
 
   assert.equal(page.split(requiredMessage).length - 1, 2);
   assert.match(page, /const sizeGateRef = useRef<SizeGate>\(null\)/);
-  assert.match(page, /const activeSizeGate=sizeGateRef\.current/);
-  assert.match(page, /if\(activeSizeGate&&!evaluation\).*return void toast\.warning/);
+  assert.match(page, /const source=evaluation\?"evaluation":"scanner"/);
+  assert.match(page, /const activeSizeGate=sizeGateRef\.current\?\.source===source\?sizeGateRef\.current:null/);
+  assert.match(page, /if\(activeSizeGate\).*return void toast\.warning/);
   assert.match(page, /matchesExpectedMinimum\(product,activeSizeGate\.product,activeSizeGate\.expectedSize\)/);
+  assert.match(page, /source:"evaluation",evaluationItemId:savedItem\.rowId/);
+  assert.match(page, /TALLA MENOR NO EXHIBIDA/);
   assert.match(page, /sizeGateRef\.current=nextGate;\s*setSizeGate\(nextGate\)/);
   assert.doesNotMatch(page, /\[storeId,currentStore\?\.name,lookupProduct,sizeGate,/);
-  assert.ok(page.indexOf("if(activeSizeGate&&!evaluation)") < page.indexOf("void logActivity(product)"));
+  assert.doesNotMatch(page, /if\(activeSizeGate&&!evaluation\)/);
+  assert.ok(page.indexOf("if(activeSizeGate)") < page.indexOf("void logActivity(product)"));
 });
 
 test("retries transient Excel batches and removes every interrupted catalog", async () => {
