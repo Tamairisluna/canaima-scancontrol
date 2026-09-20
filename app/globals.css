@@ -1782,3 +1782,113 @@ html.login-active,html.login-active body{background:#061b31}
   .users-page .user-summary{grid-template-columns:1fr}
   .users-page .users-actions{grid-template-columns:1fr}
 }
+
+/* Registro — resumen visual compacto. Conserva cálculos, filtros y datos. */
+.daily-page .daily-summary-grid{
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:12px;
+}
+.daily-page .daily-summary-grid>div{
+  min-height:104px;
+  padding:17px;
+  display:grid;
+  grid-template-columns:46px minmax(0,1fr);
+  grid-template-rows:auto auto;
+  align-items:center;
+  justify-content:initial;
+  gap:2px 13px;
+  overflow:hidden;
+  border:1px solid #dce5e9;
+  border-radius:18px;
+  background:#fff;
+  box-shadow:0 8px 22px rgba(7,63,92,.045);
+  text-align:left;
+}
+.daily-page .daily-summary-grid>div>span{
+  grid-column:1;
+  grid-row:1/3;
+  width:46px;
+  height:46px;
+  margin:0;
+  display:grid;
+  place-items:center;
+  border-radius:14px;
+  background:#eaf2f9;
+  color:#0a4b72;
+}
+.daily-page .daily-summary-grid>div>small{
+  grid-column:2;
+  grid-row:1;
+  align-self:end;
+  min-height:0;
+  color:#667984;
+  font-size:8px;
+  line-height:1.3;
+  font-weight:820;
+  letter-spacing:.075em;
+}
+.daily-page .daily-summary-grid>div>strong{
+  grid-column:2;
+  grid-row:2;
+  align-self:start;
+  color:#0b405f;
+  font-size:27px;
+  line-height:1;
+  letter-spacing:-.035em;
+}
+.daily-page .daily-summary-grid>div:nth-child(2){
+  border-color:#f0cbc7;
+  background:#fff9f8;
+}
+.daily-page .daily-summary-grid>div:nth-child(2)>span{
+  background:#ffebe8;
+  color:#b43e36;
+}
+.daily-page .daily-summary-grid>div:nth-child(3)>span{
+  background:#fff4df;
+  color:#946514;
+}
+.daily-page .daily-summary-grid>div:nth-child(4)>span{
+  background:#eef0fa;
+  color:#4d5f8e;
+}
+.daily-page .daily-summary-grid>div:nth-child(5)>span{
+  background:#eaf5f4;
+  color:#26726f;
+}
+.daily-page .daily-summary-grid>div:nth-child(6)>span{
+  background:#fff0e8;
+  color:#ad5434;
+}
+
+@media(max-width:760px){
+  .daily-page .daily-summary-grid{
+    grid-template-columns:repeat(2,minmax(0,1fr));
+    gap:9px;
+  }
+  .daily-page .daily-summary-grid>div,
+  .daily-page .daily-summary-grid>div:first-child{
+    grid-column:auto;
+    min-height:90px;
+    padding:14px;
+    grid-template-columns:40px minmax(0,1fr);
+    gap:2px 10px;
+    border-radius:16px;
+  }
+  .daily-page .daily-summary-grid>div>span{
+    width:40px;
+    height:40px;
+    border-radius:12px;
+  }
+  .daily-page .daily-summary-grid>div>span svg{width:19px;height:19px}
+  .daily-page .daily-summary-grid>div>small{
+    min-height:0;
+    font-size:7.2px;
+    line-height:1.3;
+  }
+  .daily-page .daily-summary-grid>div>strong{font-size:25px}
+}
+
+@media(max-width:360px){
+  .daily-page .daily-summary-grid{grid-template-columns:1fr}
+}
