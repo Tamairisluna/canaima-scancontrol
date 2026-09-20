@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRightLeft, LoaderCircle, Trash2, Upload } from "lucide-react";
+import { LoaderCircle, Trash2, Upload } from "lucide-react";
 import { supabase } from "@/app/lib/supabase";
+import { TechnicalIcon } from "@/app/technical-icon";
 import { Button } from "@/components/ui/button";
 
 type TransferFile = { store_id: string; file_name: string; articles: string[]; updated_at: string };
@@ -112,7 +113,7 @@ export function ActiveTransfers({ storeId, userId, storeName, state, inventoryBu
     finally { busyRef.current = false; setBusy(false); }
   }
   return <section className="transfers-card" aria-busy={busy}>
-    <div className="transfers-heading"><ArrowRightLeft size={26}/><div><h2>Traslados activos</h2><p>Excel independiente de {storeName}. Una columna: Articulo.</p></div></div>
+    <div className="transfers-heading"><span className="transfers-heading-icon" aria-hidden="true"><TechnicalIcon kind="transfer" size={24}/></span><div><h2>Traslados activos</h2><p>Excel independiente de {storeName}. Una columna: Articulo.</p></div></div>
     <label className="upload-select-button upload-native-picker"><Upload size={19}/><span>{busy ? "Procesando…" : "Seleccionar Excel de traslados"}</span><input ref={inputRef} type="file" disabled={busy || inventoryBusy || !storeId} aria-label="Seleccionar Excel de traslados" onClick={() => activity("picking")} onInput={() => void consume()} onChange={() => void consume()}/></label>
     <small>Formato XLSX o XLS · Máximo 20 MB</small>
     {state.record && <div className="transfers-file"><strong>{state.record.file_name}</strong><span>{state.record.articles.length.toLocaleString("es")} artículos · {new Date(state.record.updated_at).toLocaleString("es-VE")}</span></div>}
