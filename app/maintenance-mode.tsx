@@ -2,10 +2,9 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Clock3, LogOut, RefreshCw, ShieldCheck } from "lucide-react";
+import { Clock3, LogOut, RefreshCw, ShieldCheck, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/app/lib/supabase";
-import { TechnicalIcon } from "@/app/technical-icon";
 
 type MaintenanceRole = "employee" | "manager" | "supervisor";
 
@@ -120,7 +119,7 @@ export function MaintenanceScreen({
       </header>
 
       <section className="maintenance-card" aria-live="polite">
-        <div className="maintenance-symbol"><TechnicalIcon kind="store" size={34}/></div>
+        <div className="maintenance-symbol"><Wrench size={34}/></div>
         <span className="maintenance-eyebrow">Estado temporal del servicio</span>
         <h1>{title || DEFAULT_STATE.employee_title}</h1>
         <p>{message || DEFAULT_STATE.employee_message}</p>
