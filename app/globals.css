@@ -1892,3 +1892,12 @@ html.login-active,html.login-active body{background:#061b31}
 @media(max-width:360px){
   .daily-page .daily-summary-grid{grid-template-columns:1fr}
 }
+
+/* Iconos grandes selectivos: trazos finos; navegación, resúmenes y Excel conservan su diseño. */
+.large-module-icon{
+  display:block;
+  flex:0 0 auto;
+  overflow:visible;
+}
+.large-module-icon *{vector-effect:non-scaling-stroke}
+.scanner-icon{border-radius:18px}
