@@ -355,3 +355,29 @@ test("retries transient Excel batches and removes every interrupted catalog", as
   assert.match(migration, /delete from public\.products where catalog_id = target_catalog/);
   assert.match(migration, /if catalog_status = 'active' then/);
 });
+
+test("preflights storage and retires only validated older catalogs", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const importErrors = await readFile(new URL("../app/lib/catalog-import.ts", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../ACTUALIZAR_TIENDAS_RETENCION_CATALOGOS_20260930.sql", import.meta.url), "utf8");
+
+  const preflight = page.indexOf('supabase.rpc("catalog_upload_preflight"');
+  const versionInsert = page.indexOf('supabase.from("catalog_versions").insert');
+  assert.ok(preflight >= 0 && preflight < versionInsert);
+  assert.match(page, /if\(!capacity\?\.allowed\)throw new Error/);
+  assert.match(importErrors, /carga bloqueada de forma preventiva/);
+  assert.match(page, /El catálogo anterior solo se retira después de validar y activar por completo el nuevo/);
+
+  assert.equal((migration.match(/^\('/gm) ?? []).length, 109);
+  assert.match(migration, /count\(distinct master_email\).*<> 4/s);
+  assert.match(migration, /count\(distinct supervisor_email\).*<> 17/s);
+  assert.match(migration, /count\(distinct city\).*<> 13/s);
+  assert.match(migration, /count\(\*\) from scancontrol_desired_access\) <> 218/);
+  assert.match(migration, /perform 1\s+from public\.stores store\s+where store\.id = catalog_store\s+for update/s);
+  assert.match(migration, /actual_rows <> expected_rows::bigint/);
+  assert.match(migration, /set active_catalog_id = target_catalog/);
+  assert.match(migration, /delete from public\.catalog_versions obsolete/);
+  assert.match(migration, /obsolete\.created_at <= target_created_at/);
+  assert.match(migration, /evaluation_items_product_id_fkey[\s\S]*confdeltype = 'n'/);
+  assert.doesNotMatch(migration, /\s\/\s/);
+});

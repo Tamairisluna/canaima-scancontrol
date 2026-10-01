@@ -186,6 +186,9 @@ export function getImportErrorMessage(error: unknown) {
   if (normalized.includes("discount_percent") && normalized.includes("column")) {
     return "Activa primero la actualización de descuento en Supabase e inténtalo nuevamente.";
   }
+  if (normalized.includes("carga bloqueada de forma preventiva") || normalized.includes("capacidad segura")) {
+    return "La carga se detuvo antes de ocupar el espacio de seguridad de Supabase. El inventario activo sigue funcionando; libera espacio o reduce el Excel antes de reintentar.";
+  }
   if (normalized.includes("failed to fetch") || normalized.includes("network")) {
     return "Se perdió la conexión durante la carga. Comprueba internet e inténtalo nuevamente.";
   }
