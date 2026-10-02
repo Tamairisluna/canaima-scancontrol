@@ -16,6 +16,7 @@ export type LocalCatalog = {
   storeId: string;
   fileName: string;
   activatedAt: string;
+  sharedVersion?: string;
   products: CatalogImportProduct[];
 };
 
@@ -52,7 +53,7 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-function validateProducts(products: CatalogImportProduct[]) {
+export function validateCatalogProducts(products: CatalogImportProduct[]) {
   if (!products.length) throw new Error("El Excel no contiene productos válidos. Se conserva el catálogo anterior.");
   const seen = new Set<string>();
   for (const product of products) {
@@ -88,13 +89,14 @@ export async function readLocalCatalog(scope: CatalogScope): Promise<LocalCatalo
   });
 }
 
-export async function replaceLocalCatalog(scope: CatalogScope, fileName: string, products: CatalogImportProduct[]): Promise<LocalCatalog> {
+export async function replaceLocalCatalog(scope: CatalogScope, fileName: string, products: CatalogImportProduct[], shared?: { version: string; updatedAt: string }): Promise<LocalCatalog> {
   const key = scopeKey(scope);
-  validateProducts(products);
-  const catalog: LocalCatalog = {
+  validateCatalogProducts(products);
+  let catalog: LocalCatalog = {
     key, schemaVersion: 1, id: `local:${crypto.randomUUID()}`,
     userId: scope.userId, storeId: scope.storeId,
-    fileName, activatedAt: new Date().toISOString(), products,
+    fileName, activatedAt: shared?.updatedAt ?? new Date().toISOString(), products,
+    ...(shared ? { sharedVersion: shared.version } : {}),
   };
   const database = await openDatabase();
   // One transaction replaces the whole store catalog. An aborted write (quota,
@@ -102,15 +104,19 @@ export async function replaceLocalCatalog(scope: CatalogScope, fileName: string,
   // confirms success; the put request alone is insufficient.
   await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(OBJECT_STORE, "readwrite");
-    let request: IDBRequest;
-    try {
-      request = transaction.objectStore(OBJECT_STORE).put(catalog);
-    } catch (error) {
-      transaction.abort();
-      database.close();
-      reject(error);
-      return;
-    }
+    const store = transaction.objectStore(OBJECT_STORE);
+    const request = store.get(key);
+    request.onsuccess = () => {
+      const existing = request.result as LocalCatalog | undefined;
+      // Compare inside the write transaction: two tabs can download different
+      // versions at once, and a slow old response must never replace the new one.
+      if (shared && existing?.sharedVersion && Date.parse(existing.activatedAt) > Date.parse(shared.updatedAt)) {
+        catalog = existing;
+        return;
+      }
+      try { store.put(catalog); }
+      catch (error) { transaction.abort(); reject(error); }
+    };
     transaction.onabort = () => { database.close(); reject(transaction.error ?? request.error); };
     transaction.oncomplete = () => { database.close(); resolve(); };
   });

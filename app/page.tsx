@@ -21,7 +21,8 @@ import { ActiveTransfers, useActiveTransfers } from "@/app/active-transfers";
 import { findMinimumSize, matchesExpectedMinimum } from "@/app/lib/size-validation";
 import { MaintenanceScreen, useMaintenanceMode } from "@/app/maintenance-mode";
 import { LargeModuleIcon } from "@/app/large-module-icon";
-import { readLocalCatalog, replaceLocalCatalog, subscribeLocalCatalog, localCatalogErrorMessage, type LocalCatalog } from "@/app/lib/local-catalog";
+import { readLocalCatalog, subscribeLocalCatalog, localCatalogErrorMessage, type LocalCatalog } from "@/app/lib/local-catalog";
+import { publishSharedCatalog, syncSharedCatalog } from "@/app/lib/shared-catalog";
 import type { CatalogImportProduct } from "@/app/lib/catalog-import";
 
 type RoleCode = "employee" | "manager" | "supervisor";
@@ -31,7 +32,7 @@ type Profile = { id: string; full_name: string | null; role: RoleCode; store_id:
 type ManagedProfile = Profile & { email: string | null; created_at: string | null };
 type Product = { id: string | null; storeId: string; barcode: string; article: string; description: string; color: string; size: string; style: string; amount: number; discountPercent: number; brand: string; category: string };
 type EvaluationItem = Product & { rowId: string; observation: Observation; expectedSize: string; scannedAt: string };
-type CatalogMeta = { id: string; fileName: string; rowCount: number; activatedAt: string | null; source: "device" | "cloud" } | null;
+type CatalogMeta = { id: string; fileName: string; rowCount: number; activatedAt: string | null; source: "device" | "cloud" | "shared" } | null;
 type UploadStage = "selected" | "reading" | "parsing" | "preparing" | "uploading" | "activating" | "caching";
 type UploadState = { stage: UploadStage; fileName: string; done: number; total: number };
 type UploadFeedback = { kind: "success" | "error"; title: string; message: string } | null;
@@ -429,6 +430,8 @@ export default function Home() {
   const [cameraStatus, setCameraStatus] = useState("Preparando cámara principal 1×…");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [catalogMeta, setCatalogMeta] = useState<CatalogMeta>(null);
+  const [sharedCatalogReady, setSharedCatalogReady] = useState<boolean | null>(null);
+  const [catalogSyncMessage, setCatalogSyncMessage] = useState("");
   const [transfersBusy, setTransfersBusy] = useState(false);
   const transfers = useActiveTransfers(storeId, sessionUserId);
   const [uploading, setUploading] = useState<UploadState | null>(null);
@@ -475,6 +478,8 @@ export default function Home() {
   const catalogLoadSequenceRef = useRef(0);
   const catalogReadPromiseRef = useRef<Promise<LocalCatalog | null> | null>(null);
   const catalogUserRef = useRef("");
+  const deviceCatalogRef = useRef<LocalCatalog | null>(null);
+  const catalogSyncingRef = useRef(new Set<string>());
   const sizeGateRef = useRef<SizeGate>(null);
 
   const updateSizeGate = useCallback((nextGate:SizeGate) => {
@@ -531,6 +536,7 @@ export default function Home() {
         productLookupRef.current.clear();
         activeCatalogIdRef.current = "";
         catalogSourceRef.current = "empty";
+        deviceCatalogRef.current = null;
       }
       setSessionUserId(id);
       setBooting(true);
@@ -556,29 +562,57 @@ export default function Home() {
     const sequence = ++catalogLoadSequenceRef.current;
     const isCurrent = () => sequence === catalogLoadSequenceRef.current
       && productCacheStoreRef.current === targetStore && catalogUserRef.current === targetUserId;
+    const retainCache = productCacheStoreRef.current === targetStore && productCacheReadyRef.current;
     productCacheStoreRef.current=targetStore;
-    productCacheReadyRef.current=false;
-    productCacheRef.current=new Map();
+    if (!retainCache) {
+      productCacheReadyRef.current=false;
+      productCacheRef.current=new Map();
+      deviceCatalogRef.current=null;
+      activeCatalogIdRef.current="";
+      catalogSourceRef.current="loading";
+      setCatalogMeta(null);
+      setCachedProductCount(0);
+    }
     productLookupRef.current.clear();
-    activeCatalogIdRef.current="";
-    catalogSourceRef.current="loading";
-    setCatalogMeta(null);
-    setCachedProductCount(0);
+    setSharedCatalogReady(null);
+    setCatalogSyncMessage("");
     setCatalogLoading(true);
     try {
     const localRead = readLocalCatalog({ userId: targetUserId, storeId: targetStore });
     catalogReadPromiseRef.current = localRead;
     let local: LocalCatalog | null;
-    try { local = await localRead; } finally {
+    try { local = await localRead; } catch { local = null; } finally {
       if (catalogReadPromiseRef.current === localRead) catalogReadPromiseRef.current = null;
     }
     if (!isCurrent()) return;
-    if (local) {
-      productCacheRef.current = new Map(local.products.map((row) => [row.barcode, productFromLocal(row, targetStore)]));
+    const applyLocal = (catalog: LocalCatalog) => {
+      deviceCatalogRef.current = catalog;
+      productCacheRef.current = new Map(catalog.products.map((row) => [row.barcode, productFromLocal(row, targetStore)]));
       productCacheReadyRef.current = true;
       catalogSourceRef.current = "local";
-      setCachedProductCount(local.products.length);
-      setCatalogMeta({ id: local.id, fileName: local.fileName, rowCount: local.products.length, activatedAt: local.activatedAt, source: "device" });
+      setCachedProductCount(catalog.products.length);
+      setCatalogMeta({ id: catalog.id, fileName: catalog.fileName, rowCount: catalog.products.length, activatedAt: catalog.activatedAt, source: catalog.sharedVersion ? "shared" : "device" });
+      setCatalogLoading(false);
+    };
+    if (local) applyLocal(local);
+    const syncKey = `${targetUserId}:${targetStore}`;
+    catalogSyncingRef.current.add(syncKey);
+    try {
+      const shared = await syncSharedCatalog({ userId: targetUserId, storeId: targetStore }, local,
+        () => isCurrent() && !importInFlightRef.current && !sizeGateRef.current);
+      if (!isCurrent()) return;
+      setSharedCatalogReady(shared.available);
+      setCatalogSyncMessage(shared.warning ?? "");
+      if (shared.catalog) {
+        applyLocal(shared.catalog);
+        return;
+      }
+    } catch (error) {
+      if (!isCurrent()) return;
+      setCatalogSyncMessage(error instanceof Error ? error.message : "No se pudo comprobar la actualización del catálogo.");
+    } finally { catalogSyncingRef.current.delete(syncKey); }
+    if (!isCurrent()) return;
+    if (local || retainCache) {
       return;
     }
     // Existing shared catalogs remain readable during the transition. New
@@ -622,6 +656,38 @@ export default function Home() {
       if (isCurrent()) setCatalogLoading(false);
     }
   },[sessionUserId]);
+
+  const refreshSharedCatalog = useCallback(async (targetStore: string) => {
+    const userId = sessionUserId;
+    if (!userId || importInFlightRef.current || sizeGateRef.current) return;
+    const key = `${userId}:${targetStore}`;
+    if (catalogSyncingRef.current.has(key)) return;
+    const sequence = catalogLoadSequenceRef.current;
+    const isCurrent = () => catalogUserRef.current === userId && productCacheStoreRef.current === targetStore
+      && catalogLoadSequenceRef.current === sequence && !importInFlightRef.current && !sizeGateRef.current;
+    catalogSyncingRef.current.add(key);
+    try {
+      const current = deviceCatalogRef.current;
+      const shared = await syncSharedCatalog({ userId, storeId: targetStore }, current, isCurrent);
+      if (!isCurrent()) return;
+      setSharedCatalogReady(shared.available);
+      setCatalogSyncMessage(shared.warning ?? "");
+      if (!shared.catalog || shared.catalog.id === current?.id) return;
+      const local = shared.catalog;
+      deviceCatalogRef.current = local;
+      productLookupRef.current.clear();
+      activeCatalogIdRef.current = "";
+      productCacheRef.current = new Map(local.products.map(row => [row.barcode, productFromLocal(row, targetStore)]));
+      productCacheReadyRef.current = true;
+      catalogSourceRef.current = "local";
+      setCachedProductCount(local.products.length);
+      setCatalogMeta({ id: local.id, fileName: local.fileName, rowCount: local.products.length,
+        activatedAt: local.activatedAt, source: "shared" });
+      setCatalogLoading(false);
+    } catch (error) {
+      if (isCurrent()) setCatalogSyncMessage(error instanceof Error ? error.message : "No se pudo descargar la actualización.");
+    } finally { catalogSyncingRef.current.delete(key); }
+  }, [sessionUserId]);
 
   const loadEvaluation = useCallback(async (targetStore: string, userId: string, enabled: boolean) => {
     if (!enabled) { evaluationIdRef.current=null; setEvaluationId(null); setEvaluationItems([]); return; }
@@ -697,9 +763,24 @@ export default function Home() {
     return subscribeLocalCatalog({ userId: sessionUserId, storeId }, () => {
       // An import updates its own cache after commit. Other windows reload
       // only after the replacement transaction has completed.
-      if (!importInFlightRef.current) void loadProductCache(storeId);
+      if (!importInFlightRef.current && !catalogSyncingRef.current.has(`${sessionUserId}:${storeId}`)) void loadProductCache(storeId);
     });
   }, [storeId, sessionUserId, loadProductCache]);
+
+  useEffect(() => {
+    if (!storeId || !sessionUserId) return;
+    const refresh = () => { if (document.visibilityState === "visible") void refreshSharedCatalog(storeId); };
+    const timer = window.setInterval(refresh, 60000);
+    window.addEventListener("online", refresh);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("online", refresh);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [storeId, sessionUserId, refreshSharedCatalog]);
 
   useEffect(()=>{
     if (view !== "users" || !isOwner) return;
@@ -1131,32 +1212,38 @@ export default function Home() {
       }
       const nextCache = new Map(products.map((product) => [product.barcode, productFromLocal(product, targetStoreId)]));
       setUploading({stage:"uploading",fileName,done:0,total:products.length});
-      const local = await replaceLocalCatalog({userId:targetUserId,storeId:targetStoreId},fileName,products);
+      const published = await publishSharedCatalog({userId:targetUserId,storeId:targetStoreId},fileName,products,
+        stage => setUploading({stage,fileName,done:stage==="caching"?products.length:0,total:products.length}),
+        () => catalogUserRef.current === targetUserId && productCacheStoreRef.current === targetStoreId);
       if (catalogUserRef.current !== targetUserId || productCacheStoreRef.current !== targetStoreId) return;
-      // Only the transaction completion permits switching scanner data. A failed
-      // write never clears the existing cache or its stored catalog.
+      // Switch scanner data only after the shared pointer is confirmed.
+      // A local-storage failure still permits scanning the published data.
       catalogLoadSequenceRef.current += 1;
       productLookupRef.current.clear();
       activeCatalogIdRef.current="";
       catalogSourceRef.current="local";
+      deviceCatalogRef.current=published.catalog;
       productCacheRef.current=nextCache;
       productCacheReadyRef.current=true;
       setCatalogLoading(false);
       setCachedProductCount(products.length);
-      setCatalogMeta({id:local.id,fileName:local.fileName,rowCount:products.length,activatedAt:local.activatedAt,source:"device"});
+      setCatalogMeta({id:published.meta.version,fileName:published.meta.file_name,rowCount:products.length,activatedAt:published.meta.updated_at,source:"shared"});
+      setSharedCatalogReady(true);
+      setCatalogSyncMessage(published.localWarning);
       setUploading({stage:"caching",fileName,done:products.length,total:products.length});
       updateSizeGate(null);
       setLastProduct(null);
       setScanFeedback(null);
       toast.dismiss("size-gate");
-      const details=[`${products.length.toLocaleString("es-ES")} productos listos para escanear en ${targetStoreName} desde este dispositivo.`];
+      const details=[`${products.length.toLocaleString("es-ES")} productos compartidos con todos los dispositivos de ${targetStoreName}. Los demás teléfonos se actualizarán automáticamente al abrir la app o durante el uso.`];
+      if(published.localWarning)details.push(published.localWarning);
       if(parsed.skippedRows)details.push(`${parsed.skippedRows.toLocaleString("es-ES")} filas sin código fueron omitidas.`);
       if(parsed.duplicateRows)details.push(`${parsed.duplicateRows.toLocaleString("es-ES")} códigos repetidos fueron omitidos.`);
       if(parsed.unavailableRows)details.push(`${parsed.unavailableRows.toLocaleString("es-ES")} variantes sin existencia fueron excluidas del cálculo de talla menor.`);
       const message=details.join(" ");
       setUploadFeedback({kind:"success",title:"Excel cargado correctamente",message});
       setRetryUploadFile(null);
-      toast.success("Catálogo activado",{description:message});
+      toast.success("Catálogo compartido",{description:`${products.length.toLocaleString("es-ES")} productos. Los dispositivos de la tienda se actualizarán automáticamente.`,duration:3000});
     }catch(error){
       setRetryUploadFile(file);
       const message=localCatalogErrorMessage(error);
@@ -1167,7 +1254,7 @@ export default function Home() {
   }
 
   const uploadPercent=uploading?uploading.stage==="selected"?3:uploading.stage==="reading"?8:uploading.stage==="parsing"?18:uploading.stage==="preparing"?25:uploading.stage==="uploading"?25+Math.round((uploading.done/Math.max(uploading.total,1))*60):uploading.stage==="activating"?92:97:0;
-  const uploadLabel=uploading?uploading.stage==="selected"?"Archivo seleccionado":uploading.stage==="reading"?"Leyendo el archivo…":uploading.stage==="parsing"?"Identificando columnas y productos…":uploading.stage==="preparing"?"Preparando el catálogo de la tienda…":uploading.stage==="uploading"?"Guardando Excel en este dispositivo…":uploading.stage==="activating"?"Validando el catálogo local…":"Preparando el escaneo instantáneo…":"";
+  const uploadLabel=uploading?uploading.stage==="selected"?"Archivo seleccionado":uploading.stage==="reading"?"Leyendo el archivo…":uploading.stage==="parsing"?"Identificando columnas y productos…":uploading.stage==="preparing"?"Comprimiendo el catálogo de la tienda…":uploading.stage==="uploading"?"Compartiendo catálogo con la tienda…":uploading.stage==="activating"?"Confirmando la nueva versión…":"Guardando la copia para escaneo instantáneo…":"";
 
   async function addWithoutLabel(){
     const targetEvaluation=await ensureEvaluation();if(!targetEvaluation)return;
@@ -1313,7 +1400,7 @@ export default function Home() {
         </>}
       </section>}
 
-      {view==="catalog"&&<section className="page-content catalog-page"><div className="catalog-intro"><div className="catalog-icon"><LargeModuleIcon kind="inventory" size={30}/></div><div><Badge variant="outline">Inventario independiente</Badge><h2>Excel de {currentStore?.name}</h2><p>El Excel se guarda en este dispositivo para la tienda seleccionada. Cárgalo también en cada teléfono o computadora que vaya a escanear.</p></div></div><div className="catalog-grid"><div className={`upload-card ${uploading?"uploading":""}`} aria-live="polite" aria-busy={Boolean(uploading)}>{uploading?<><div className="excel-uploading-icon"><ExcelDocumentIcon/><LoaderCircle className="spin" size={22}/></div><strong>{uploadLabel}</strong><span className="upload-file-name">{uploading.fileName}</span><div className="upload-progress-copy"><span>{uploadLabel}</span><strong>{uploadPercent}%</strong></div><div className="upload-progress"><span style={{width:`${uploadPercent}%`}}/></div><small>No cierres esta pantalla hasta que aparezca la confirmación</small></>:<><ExcelDocumentIcon/><strong>Cargar o reemplazar archivo</strong><span className="upload-format">Formato XLSX o XLS · Máximo 20 MB</span><span className="upload-format">Cárgalo en cada dispositivo que vaya a escanear.</span><label className="upload-select-button upload-native-picker"><Upload size={19}/><span>Seleccionar Excel</span><input ref={fileInputRef} disabled={transfersBusy} type="file" aria-label="Seleccionar archivo Excel" onClick={()=>setExcelFileActivity("picking")} onInput={handleExcelSelection} onChange={handleExcelSelection}/></label><small className="sr-only">Elige el inventario de esta tienda; la carga comenzará automáticamente.</small></>}</div><div className="catalog-status"><h2>Inventario activo</h2><div className="catalog-file-row"><ExcelDocumentIcon size="small"/><div><h3>{catalogMeta?.fileName??"No se ha cargado un archivo"}</h3><Badge className={catalogMeta?"active-catalog":"empty-catalog"}>{catalogMeta?<><Check size={13}/> {catalogMeta.source==="device"?"En este dispositivo":"Catálogo compartido anterior"}</> :"Sin inventario"}</Badge></div></div><div className="catalog-active-detail"><PackageSearch size={20}/><span>{(catalogMeta?.rowCount??0).toLocaleString("es-ES")} productos</span></div><div className="catalog-active-detail"><Clock3 size={20}/><span>Última actualización: {formatCatalogUpdatedAt(catalogMeta?.activatedAt)}</span></div><div className="catalog-meta" aria-hidden="true"><div><span>Tienda</span><strong>{currentStore?.name}</strong></div><div><span>Alcance</span><strong>{catalogMeta?.source==="device"?"Este dispositivo":"Catálogo compartido anterior"}</strong></div></div></div></div>{uploadFeedback&&<div className={`upload-feedback upload-feedback-${uploadFeedback.kind}`} role={uploadFeedback.kind==="error"?"alert":"status"}>{uploadFeedback.kind==="success"?<CheckCircle2 size={22}/>:<X size={22}/>}<div><strong>{uploadFeedback.title}</strong><p>{uploadFeedback.message}</p>{uploadFeedback.kind==="error"&&retryUploadFile&&<Button className="upload-retry-button" type="button" variant="outline" disabled={Boolean(uploading)} onClick={()=>void importExcel(retryUploadFile)}><RefreshCw size={15}/> Reintentar carga</Button>}</div></div>}<ActiveTransfers key={`${sessionUserId}:${storeId}`} storeId={storeId} userId={sessionUserId} storeName={currentStore?.name??"esta tienda"} state={transfers} inventoryBusy={Boolean(uploading)} onBusyChange={setTransfersBusy}/><div className="safety-note"><ShieldCheck size={22}/><div><strong>El catálogo anterior se conserva si la carga falla.</strong><p>Guarda el Excel original: si borras los datos del navegador o cambias de dispositivo, tendrás que cargarlo nuevamente.</p></div></div></section>}
+      {view==="catalog"&&<section className="page-content catalog-page"><div className="catalog-intro"><div className="catalog-icon"><LargeModuleIcon kind="inventory" size={30}/></div><div><Badge variant="outline">Catálogo compartido</Badge><h2>Excel de {currentStore?.name}</h2><p>Carga el Excel una sola vez para esta tienda. Los demás teléfonos descargarán automáticamente el catálogo y conservarán una copia para escanear.</p></div></div><div className="catalog-grid"><div className={`upload-card ${uploading?"uploading":""}`} aria-live="polite" aria-busy={Boolean(uploading)}>{uploading?<><div className="excel-uploading-icon"><ExcelDocumentIcon/><LoaderCircle className="spin" size={22}/></div><strong>{uploadLabel}</strong><span className="upload-file-name">{uploading.fileName}</span><div className="upload-progress-copy"><span>{uploadLabel}</span><strong>{uploadPercent}%</strong></div><div className="upload-progress"><span style={{width:`${uploadPercent}%`}}/></div><small>No cierres esta pantalla hasta que aparezca la confirmación</small></>:<><ExcelDocumentIcon/><strong>Cargar o reemplazar archivo</strong><span className="upload-format">Formato XLSX o XLS · Máximo 20 MB</span><span className="upload-format">Una sola carga actualiza todos los dispositivos de la tienda.</span><label className="upload-select-button upload-native-picker"><Upload size={19}/><span>Seleccionar Excel</span><input ref={fileInputRef} disabled={transfersBusy} type="file" aria-label="Seleccionar archivo Excel" onClick={()=>setExcelFileActivity("picking")} onInput={handleExcelSelection} onChange={handleExcelSelection}/></label><small className="sr-only">Elige el inventario de esta tienda; la carga comenzará automáticamente.</small></>}</div><div className="catalog-status"><h2>Inventario activo</h2><div className="catalog-file-row"><ExcelDocumentIcon size="small"/><div><h3>{catalogMeta?.fileName??"No se ha cargado un archivo"}</h3><Badge className={catalogMeta?"active-catalog":"empty-catalog"}>{catalogMeta?<><Check size={13}/> {catalogMeta.source==="shared"?"Compartido · copia local":catalogMeta.source==="device"?"Copia local anterior":"Catálogo compartido anterior"}</> :"Sin inventario"}</Badge></div></div><div className="catalog-active-detail"><PackageSearch size={20}/><span>{(catalogMeta?.rowCount??0).toLocaleString("es-ES")} productos</span></div><div className="catalog-active-detail"><Clock3 size={20}/><span>Última actualización: {formatCatalogUpdatedAt(catalogMeta?.activatedAt)}</span></div><div className="catalog-meta" aria-hidden="true"><div><span>Tienda</span><strong>{currentStore?.name}</strong></div><div><span>Alcance</span><strong>{catalogMeta?.source==="shared"?"Todos los dispositivos de la tienda":catalogMeta?.source==="device"?"Copia local anterior":"Catálogo compartido anterior"}</strong></div></div><Button type="button" variant="outline" disabled={Boolean(uploading)} onClick={()=>void refreshSharedCatalog(storeId)}><RefreshCw size={15}/> Buscar actualización</Button>{catalogSyncMessage&&<p role="status">{catalogSyncMessage}</p>}{sharedCatalogReady===false&&<p role="status">La publicación compartida está pendiente de activación. El inventario actual sigue disponible.</p>}</div></div>{uploadFeedback&&<div className={`upload-feedback upload-feedback-${uploadFeedback.kind}`} role={uploadFeedback.kind==="error"?"alert":"status"}>{uploadFeedback.kind==="success"?<CheckCircle2 size={22}/>:<X size={22}/>}<div><strong>{uploadFeedback.title}</strong><p>{uploadFeedback.message}</p>{uploadFeedback.kind==="error"&&retryUploadFile&&<Button className="upload-retry-button" type="button" variant="outline" disabled={Boolean(uploading)} onClick={()=>void importExcel(retryUploadFile)}><RefreshCw size={15}/> Reintentar carga</Button>}</div></div>}<ActiveTransfers key={`${sessionUserId}:${storeId}`} storeId={storeId} userId={sessionUserId} storeName={currentStore?.name??"esta tienda"} state={transfers} inventoryBusy={Boolean(uploading)} onBusyChange={setTransfersBusy}/><div className="safety-note"><ShieldCheck size={22}/><div><strong>El catálogo anterior se conserva si la carga falla.</strong><p>Cada teléfono recupera el catálogo actualizado al abrir la app con conexión. Si la descarga falla, conserva la última copia completa.</p></div></div></section>}
 
       {view==="users"&&isOwner&&<section className="page-content users-page"><div className="users-intro"><div><Badge className="status-badge"><ShieldCheck size={14}/> Administración exclusiva</Badge><h2>Usuarios y permisos</h2><p>Solo Romer puede asignar funciones, cambiar tiendas y autorizar el acceso.</p></div><div className="users-actions"><Button variant="outline" onClick={()=>void loadManagedProfiles()} disabled={usersLoading||Boolean(savingUserId)}><RefreshCw className={usersLoading?"spin":""} size={16}/> Actualizar</Button><Button className="primary-action" onClick={()=>{setNewUser((current)=>({...current,storeId:current.storeId||stores[0]?.id||""}));setUserDialogOpen(true);}}><UserPlus size={17}/> Agregar usuario</Button></div></div><div className="user-summary"><div><span className="user-summary-icon" aria-hidden="true"><Users size={20}/></span><span>EMPLEADOS</span><strong>{userStats.employees}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><Building2 size={20}/></span><span>GERENTES</span><strong>{userStats.managers}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><ShieldCheck size={20}/></span><span>SUPERVISORES</span><strong>{userStats.supervisors}</strong></div><div><span className="user-summary-icon" aria-hidden="true"><Clock3 size={20}/></span><span>PENDIENTES</span><strong>{userStats.pending}</strong></div></div>{usersError?<div className="users-setup"><div className="pending-icon"><Users size={32}/></div><h3>Falta activar el control propietario</h3><p>{usersError} Ejecuta el nuevo SQL de “Control propietario” en Supabase y luego pulsa Actualizar.</p></div>:usersLoading?<div className="users-loading"><LoaderCircle className="spin" size={28}/><span>Cargando cuentas registradas…</span></div>:<div className="users-card"><div className="data-card-head"><div><strong>Cuentas registradas</strong><span>{managedProfiles.length} usuarios bajo el control de Romer</span></div><Badge variant="outline">Asignación por tienda</Badge></div><div className="users-table-wrap"><table className="users-table"><thead><tr><th>Usuario</th><th>Rol</th><th>Tienda asignada</th><th>Acceso</th></tr></thead><tbody>{managedProfiles.length?managedProfiles.map((item)=><tr key={item.id}><td><div className="managed-user"><div className="managed-avatar">{(item.full_name||item.email||"U").split(/\s+/).slice(0,2).map((part)=>part[0]?.toUpperCase()).join("")}</div><div><strong>{item.full_name||"Nombre no indicado"}</strong><span>{item.email||`Cuenta ${item.id.slice(0,8)}`}</span>{item.is_owner&&<Badge className="self-badge">Propietario</Badge>}</div></div></td><td><Select value={item.role} disabled={item.is_owner||Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{role:value as RoleCode})}><SelectTrigger className="user-role-select"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></td><td>{item.is_owner?<div className="all-stores"><Store size={15}/> Control de todas</div>:item.role==="supervisor"?<div className="all-stores supervisor-stores"><Store size={15}/> Tiendas asignadas por correo</div>:<Select value={item.store_id??undefined} disabled={Boolean(savingUserId)} onValueChange={(value)=>void updateManagedProfile(item.id,{store_id:value})}><SelectTrigger className="user-store-select"><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select>}</td><td><div className="access-toggle"><Switch checked={item.is_active} disabled={item.is_owner||Boolean(savingUserId)} onCheckedChange={(checked)=>void updateManagedProfile(item.id,{is_active:checked})} aria-label={`Acceso de ${item.full_name||item.email||"usuario"}`}/><span className={item.is_active?"access-active":"access-inactive"}>{savingUserId===item.id?"Guardando…":item.is_active?"Activo":"Desactivado"}</span></div></td></tr>):<tr><td colSpan={4} className="empty-table">Aún no hay cuentas registradas.</td></tr>}</tbody></table></div></div>}
         <Dialog open={userDialogOpen} onOpenChange={(open)=>!creatingUser&&setUserDialogOpen(open)}><DialogContent className="user-dialog"><DialogHeader><div className="dialog-icon"><Plus size={21}/></div><DialogTitle>Agregar nuevo usuario</DialogTitle><DialogDescription>Romer define desde aquí quién puede entrar, su función y la tienda correspondiente.</DialogDescription></DialogHeader><form className="create-user-form" onSubmit={createManagedUser}><label>Nombre completo<Input value={newUser.fullName} onChange={(event)=>setNewUser({...newUser,fullName:event.target.value})} placeholder="Nombre y apellido" required/></label><label>Correo electrónico<Input value={newUser.email} onChange={(event)=>setNewUser({...newUser,email:event.target.value})} type="email" placeholder="empleado@empresa.com" required/></label><label>Contraseña temporal<Input value={newUser.password} onChange={(event)=>setNewUser({...newUser,password:event.target.value})} type="password" minLength={8} placeholder="Mínimo 8 caracteres" required/></label><div className="create-user-grid"><label>Función<Select value={newUser.role} onValueChange={(value)=>setNewUser({...newUser,role:value as RoleCode})}><SelectTrigger><SelectValue/></SelectTrigger><SelectContent><SelectItem value="employee">Empleado</SelectItem><SelectItem value="manager">Gerente</SelectItem><SelectItem value="supervisor">Supervisor</SelectItem></SelectContent></Select></label><label>Tienda<Select value={newUser.storeId} onValueChange={(value)=>setNewUser({...newUser,storeId:value})}><SelectTrigger><SelectValue placeholder="Seleccionar tienda"/></SelectTrigger><SelectContent>{stores.map((store)=><SelectItem key={store.id} value={store.id}>{store.name}</SelectItem>)}</SelectContent></Select></label></div><div className="create-user-note"><Mail size={17}/><span>La persona recibirá un correo de confirmación antes de poder iniciar sesión.</span></div><DialogFooter><Button type="button" variant="outline" onClick={()=>setUserDialogOpen(false)} disabled={creatingUser}>Cancelar</Button><Button className="primary-action" type="submit" disabled={creatingUser}>{creatingUser?<><LoaderCircle className="spin" size={17}/> Creando…</>:<><UserPlus size={17}/> Crear usuario</>}</Button></DialogFooter></form></DialogContent></Dialog>

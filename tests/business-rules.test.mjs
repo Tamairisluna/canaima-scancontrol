@@ -343,12 +343,12 @@ test("blocks every unrelated barcode until the exact minimum size is scanned", a
   assert.ok(page.indexOf("if(activeSizeGate)") < page.indexOf("void logActivity(product)"));
 });
 
-test("new Excel imports persist locally without catalog mutations in Supabase", async () => {
+test("new Excel imports publish a shared file without restoring product-row catalog mutations", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const importer = page.slice(page.indexOf("  async function importExcel"), page.indexOf("  const uploadPercent"));
-  assert.match(importer, /await replaceLocalCatalog/);
+  assert.match(importer, /await publishSharedCatalog/);
   assert.doesNotMatch(importer, /supabase\.(from|rpc)/);
-  assert.ok(importer.indexOf("await replaceLocalCatalog") < importer.indexOf("productCacheRef.current=nextCache"));
+  assert.ok(importer.indexOf("await publishSharedCatalog") < importer.indexOf("productCacheRef.current=nextCache"));
   assert.match(page, /Reintentar carga/);
 });
 
