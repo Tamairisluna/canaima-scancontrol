@@ -46,7 +46,7 @@ on conflict (id) do update set public = false, file_size_limit = excluded.file_s
 drop policy if exists shared_catalog_object_read on storage.objects;
 create policy shared_catalog_object_read on storage.objects for select to authenticated
 using (bucket_id = 'scancontrol-catalogs' and exists (
-  select 1 from public.stores s where s.id::text = split_part(name, '/', 1)
+  select 1 from public.stores s where s.id::text = split_part(storage.objects.name, '/', 1)
     and public.current_user_can_access_store(s.id)
 ));
 
@@ -54,7 +54,7 @@ drop policy if exists shared_catalog_object_upload on storage.objects;
 create policy shared_catalog_object_upload on storage.objects for insert to authenticated
 with check (bucket_id = 'scancontrol-catalogs' and owner_id = (select auth.uid())::text
   and name ~ '^[0-9a-f-]{36}/[0-9a-f-]{36}\.json\.gz$' and exists (
-    select 1 from public.stores s where s.id::text = split_part(name, '/', 1)
+    select 1 from public.stores s where s.id::text = split_part(storage.objects.name, '/', 1)
       and public.current_user_can_access_store(s.id)
   ));
 
@@ -63,9 +63,9 @@ with check (bucket_id = 'scancontrol-catalogs' and owner_id = (select auth.uid()
 drop policy if exists shared_catalog_object_delete on storage.objects;
 create policy shared_catalog_object_delete on storage.objects for delete to authenticated
 using (bucket_id = 'scancontrol-catalogs' and exists (
-  select 1 from public.stores s where s.id::text = split_part(name, '/', 1)
+  select 1 from public.stores s where s.id::text = split_part(storage.objects.name, '/', 1)
     and public.current_user_can_access_store(s.id)
-) and not exists (select 1 from public.store_catalog_files c where c.object_path = name));
+) and not exists (select 1 from public.store_catalog_files c where c.object_path = storage.objects.name));
 
 create or replace function public.publish_store_catalog_file(
   p_store_id uuid, p_version uuid, p_expected_version uuid,

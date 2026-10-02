@@ -12,7 +12,7 @@ await db.exec(`
   create role anon; create role authenticated;
   create schema auth; create schema storage;
   create table auth.users(id uuid primary key);
-  create table public.stores(id uuid primary key);
+  create table public.stores(id uuid primary key,name text not null);
   create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
   create table storage.objects(id uuid default gen_random_uuid(),bucket_id text,name text,owner_id text,metadata jsonb);
   alter table storage.objects enable row level security;
@@ -22,9 +22,30 @@ await db.exec(`
   create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
   create function public.current_user_can_access_store(id uuid) returns boolean language sql stable
     as $$select auth.uid() = '${user}'::uuid and id = '${a}'::uuid$$;
-  insert into auth.users values('${user}'); insert into public.stores values('${a}'),('${b}');
+  insert into auth.users values('${user}');
+  insert into public.stores values('${a}','AA PF 2022'),('${b}','BB PF 2022');
 `);
 const sql=await readFile(new URL("../ACTIVAR_CATALOGOS_COMPARTIDOS_20261002.sql",import.meta.url),"utf8");
+const repair=await readFile(new URL("../CORREGIR_PERMISOS_CATALOGOS_20261002.sql",import.meta.url),"utf8");
+
+test("repair resolves the store-name collision without changing data or access assignments",async()=>{
+  const broken=sql.replaceAll("split_part(storage.objects.name, '/', 1)","split_part(name, '/', 1)");
+  await db.exec(broken);
+  const before=(await db.query("select * from public.stores order by id")).rows;
+  const temporary=crypto.randomUUID(),path=`${a}/${temporary}.json.gz`;
+  await db.exec(`set role authenticated; select set_config('request.jwt.claim.sub','${user}',false);`);
+  await assert.rejects(db.query("insert into storage.objects(bucket_id,name,owner_id,metadata) values('scancontrol-catalogs',$1,$2,'{\"size\":100}')",[path,user]),/row-level security/);
+  await db.exec("reset role");
+  await db.exec(repair);
+  await db.exec(repair);
+  assert.deepEqual((await db.query("select * from public.stores order by id")).rows,before);
+  await db.exec("set role authenticated");
+  await db.query("insert into storage.objects(bucket_id,name,owner_id,metadata) values('scancontrol-catalogs',$1,$2,'{\"size\":100}')",[path,user]);
+  assert.equal((await db.query("select name from storage.objects where name=$1",[path])).rows.length,1);
+  assert.equal((await db.query("delete from storage.objects where name=$1 returning name",[path])).rows.length,1);
+  await assert.rejects(db.query("insert into storage.objects(bucket_id,name,owner_id,metadata) values('scancontrol-catalogs',$1,$2,'{\"size\":100}')",[`${b}/${temporary}.json.gz`,user]),/row-level security/);
+  await db.exec("reset role");
+});
 
 test("additive SQL installs idempotently and returns all three readiness flags",async()=>{
   const results=await db.exec(sql);
@@ -45,6 +66,7 @@ test("publishes only complete assigned-store objects and protects the active obj
   const result=await publish(v1,null);
   assert.equal(result.rows[0].result.version,v1);
   assert.equal(result.rows[0].result.previous_path,null);
+  assert.equal((await db.query("select name from storage.objects where name=$1",[`${a}/${v1}.json.gz`])).rows.length,1);
   const deleted=await db.query("delete from storage.objects where name=$1 returning name",[`${a}/${v1}.json.gz`]);
   assert.equal(deleted.rows.length,0);
 });
@@ -64,6 +86,7 @@ test("another account cannot read, upload, publish or delete assigned-store cata
   await db.exec("select set_config('request.jwt.claim.sub','00000000-0000-4000-8000-000000000099',false)");
   assert.equal((await db.query("select * from public.store_catalog_files")).rows.length,0);
   assert.equal((await db.query("select * from storage.objects")).rows.length,0);
+  await assert.rejects(db.query("insert into storage.objects(bucket_id,name,owner_id,metadata) values('scancontrol-catalogs',$1,$2,'{\"size\":100}')",[`${a}/${crypto.randomUUID()}.json.gz`,"00000000-0000-4000-8000-000000000099"]),/row-level security/);
   await assert.rejects(publish(crypto.randomUUID(),v2),/No tienes permiso/);
   assert.equal((await db.query("delete from storage.objects returning name")).rows.length,0);
 });

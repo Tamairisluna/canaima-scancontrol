@@ -15,6 +15,8 @@ La copia anterior sigue disponible mientras se descarga la nueva. Antes de reemp
 
 Hasta activar el SQL y publicar el primer archivo de cada tienda, siguen disponibles los catálogos locales anteriores y los inventarios históricos activos de Supabase. El código reconoce cuando la tabla nueva aún no existe y mantiene la lectura anterior. Una nueva carga compartida muestra un aviso de activación pendiente en ese caso.
 
+Corrección de permisos del 2 de octubre: si se ejecutó la primera versión del SQL y una carga muestra `new row violates row-level security policy`, ejecutar `CORREGIR_PERMISOS_CATALOGOS_20261002.sql`. Cambia únicamente las tres políticas existentes del bucket. Las subconsultas ahora usan `storage.objects.name` explícitamente: el `name` sin calificar se resolvía como `stores.name` e impedía las cargas y descargas autorizadas. Las pruebas de PostgreSQL incluyen la columna real `stores.name`, reproducen el fallo anterior y comprueban la reparación y su aislamiento por tienda. No se elimina ningún inventario ni se amplían las asignaciones.
+
 La publicación se confirma después de subir el archivo completo. Dos cargas simultáneas de la misma tienda usan comparación de versión y bloqueo breve por tienda; la segunda debe reintentarse si la primera ya cambió la versión. La función usa `SECURITY INVOKER`, RLS y el permiso existente `current_user_can_access_store`, manteniendo las asignaciones de cada rol. El archivo actual no puede borrarse mediante la política de limpieza. El archivo sustituido se elimina vía Storage API después de publicar; los temporales abandonados mayores de una hora se limpian en cargas posteriores. Un fallo de limpieza no invalida la carga publicada.
 
 ## Espacio y descargas
