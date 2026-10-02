@@ -267,7 +267,7 @@ test("keeps the selected Excel alive until the mobile import finishes", async ()
   assert.ok(importer.indexOf("const fileBytesPromise=file.arrayBuffer()") < importer.indexOf("requestAnimationFrame"));
   assert.match(page, /setExcelFileActivity\("picking"\)/);
   assert.match(importer, /setExcelFileActivity\("importing"\)/);
-  assert.match(importer, /finally\{setUploading\(null\);setExcelFileActivity\(null\);\}/);
+  assert.match(importer, /finally\{importInFlightRef\.current=false;setUploading\(null\);setExcelFileActivity\(null\);\}/);
   assert.doesNotMatch(page, /accept="\.xlsx,\.xls"/);
   assert.doesNotMatch(page, /fileInputRef\.current\?\.click\(\)/);
   assert.match(page, /className="upload-select-button upload-native-picker"/);
@@ -343,30 +343,17 @@ test("blocks every unrelated barcode until the exact minimum size is scanned", a
   assert.ok(page.indexOf("if(activeSizeGate)") < page.indexOf("void logActivity(product)"));
 });
 
-test("retries transient Excel batches and removes every interrupted catalog", async () => {
+test("new Excel imports persist locally without catalog mutations in Supabase", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const migration = await readFile(new URL("../SUPABASE_CAMBIOS_PRIORITARIOS.sql", import.meta.url), "utf8");
-
-  assert.match(page, /const batchSize=150/);
-  assert.match(page, /for\(let attempt=0;attempt<3&&pending\.length;attempt\+=1\)/);
-  assert.match(page, /transientUploadError/);
-  assert.match(page, /supabase\.rpc\("discard_catalog"/);
+  const importer = page.slice(page.indexOf("  async function importExcel"), page.indexOf("  const uploadPercent"));
+  assert.match(importer, /await replaceLocalCatalog/);
+  assert.doesNotMatch(importer, /supabase\.(from|rpc)/);
+  assert.ok(importer.indexOf("await replaceLocalCatalog") < importer.indexOf("productCacheRef.current=nextCache"));
   assert.match(page, /Reintentar carga/);
-  assert.match(migration, /delete from public\.products where catalog_id = target_catalog/);
-  assert.match(migration, /if catalog_status = 'active' then/);
 });
 
-test("preflights storage and retires only validated older catalogs", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  const importErrors = await readFile(new URL("../app/lib/catalog-import.ts", import.meta.url), "utf8");
+test("legacy retention SQL still protects validated catalogs and historical evaluations", async () => {
   const migration = await readFile(new URL("../ACTUALIZAR_TIENDAS_RETENCION_CATALOGOS_20260930.sql", import.meta.url), "utf8");
-
-  const preflight = page.indexOf('supabase.rpc("catalog_upload_preflight"');
-  const versionInsert = page.indexOf('supabase.from("catalog_versions").insert');
-  assert.ok(preflight >= 0 && preflight < versionInsert);
-  assert.match(page, /if\(!capacity\?\.allowed\)throw new Error/);
-  assert.match(importErrors, /carga bloqueada de forma preventiva/);
-  assert.match(page, /El catálogo anterior solo se retira después de validar y activar por completo el nuevo/);
 
   assert.equal((migration.match(/^\('/gm) ?? []).length, 109);
   assert.match(migration, /count\(distinct master_email\).*<> 4/s);
