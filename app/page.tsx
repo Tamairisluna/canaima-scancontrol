@@ -479,6 +479,7 @@ export default function Home() {
   const importInFlightRef = useRef(false);
   const controlsRef = useRef<IScannerControls | null>(null);
   const cameraSessionRef = useRef(0);
+  const cameraStreamRef = useRef<MediaStream | null>(null);
   const lastScanRef = useRef({ code: "", at: 0 });
   const productLookupRef = useRef<Map<string, Promise<Product | null>>>(new Map());
   const activitySetupWarningRef = useRef(false);
@@ -567,7 +568,7 @@ export default function Home() {
     const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession)=>{
       applySession(nextSession?.user.id ?? null);
     });
-    return ()=>{ mounted=false; if (hydrationTimer !== null) window.clearTimeout(hydrationTimer); listener.subscription.unsubscribe(); controlsRef.current?.stop(); };
+    return ()=>{ mounted=false; if (hydrationTimer !== null) window.clearTimeout(hydrationTimer); listener.subscription.unsubscribe(); cameraSessionRef.current+=1; releaseCameraStream(); };
   }, [hydrate]);
 
   const loadProductCache = useCallback(async (targetStore:string) => {
@@ -1053,8 +1054,9 @@ export default function Home() {
   function releaseCameraStream(){
     controlsRef.current?.stop();
     controlsRef.current=null;
-    const stream=videoRef.current?.srcObject;
-    if(stream instanceof MediaStream)stream.getTracks().forEach((track)=>track.stop());
+    const streams=new Set([cameraStreamRef.current,videoRef.current?.srcObject]);
+    cameraStreamRef.current=null;
+    streams.forEach((stream)=>{if(stream instanceof MediaStream)stream.getTracks().forEach((track)=>track.stop());});
     if(videoRef.current)videoRef.current.srcObject=null;
   }
 
@@ -1076,10 +1078,22 @@ export default function Home() {
     releaseCameraStream();
     setCameraStatus("Preparando cámara principal 1×…");
     setCameraOpen(true);
+    const handleCameraError=(error:unknown)=>{
+      if(cameraSession!==cameraSessionRef.current)return;
+      stopCamera();
+      const name=error instanceof DOMException?error.name:"";
+      const description=name==="NotAllowedError"
+        ? "Permite el acceso a la cámara en el navegador y vuelve a intentarlo."
+        : name==="NotFoundError"
+          ? "No se encontró una cámara trasera disponible."
+          : "Cierra otras aplicaciones que usen la cámara y vuelve a intentarlo.";
+      toast.error("No se pudo abrir la cámara",{description});
+    };
     try{
       let videoElement:HTMLVideoElement|null=null;
       for(let attempt=0;attempt<12&&!videoElement;attempt+=1){
         await new Promise<void>((resolve)=>requestAnimationFrame(()=>resolve()));
+        if(cameraSession!==cameraSessionRef.current)return;
         videoElement=videoRef.current;
       }
       if(!videoElement)throw new Error("No se pudo preparar la vista de la cámara");
@@ -1087,10 +1101,23 @@ export default function Home() {
       const stream=await navigator.mediaDevices.getUserMedia(cameraConstraints());
 
       if(cameraSession!==cameraSessionRef.current){stream.getTracks().forEach((track)=>track.stop());return;}
+      cameraStreamRef.current=stream;
+      const releaseCanceledStream=()=>{
+        stream.getTracks().forEach((track)=>track.stop());
+        if(cameraStreamRef.current===stream)cameraStreamRef.current=null;
+        if(videoElement.srcObject===stream)videoElement.srcObject=null;
+      };
+      stream.getVideoTracks().forEach((track)=>track.addEventListener("ended",()=>{
+        if(cameraSession!==cameraSessionRef.current)return;
+        stopCamera();
+        toast.info("La cámara se detuvo",{description:"Puedes activarla de nuevo para continuar escaneando."});
+      },{once:true}));
       const optimization=await optimizeCamera(stream,videoElement);
+      if(cameraSession!==cameraSessionRef.current){releaseCanceledStream();return;}
       const quality=optimization.width&&optimization.height?` · ${optimization.width}×${optimization.height}`:"";
       const baseCameraStatus=optimization.focus?`Cámara principal 1× · enfoque continuo${quality}`:`Cámara trasera principal 1×${quality}`;
       const acceptDecodedBarcode=(rawValue:string)=>{
+        if(cameraSession!==cameraSessionRef.current)return;
         const scanned=normalizeBarcode(rawValue),now=Date.now();
         if(!scanned)return;
         if(scanned===lastScanRef.current.code&&now-lastScanRef.current.at<900){lastScanRef.current.at=now;return;}
@@ -1098,11 +1125,13 @@ export default function Home() {
         void registerCode(scanned,evaluation);
       };
       const startZxingReader=async()=>{
+        if(cameraSession!==cameraSessionRef.current){releaseCanceledStream();return;}
         const reader=new BrowserMultiFormatOneDReader(scannerHints(),{delayBetweenScanAttempts:35,delayBetweenScanSuccess:60});
         const androidScanner=/Android/i.test(navigator.userAgent);
         let failedScanAttempts=0;
         setCameraStatus(baseCameraStatus);
-        controlsRef.current=await reader.decodeFromStream(stream,videoElement,(result)=>{
+        const controls=await reader.decodeFromStream(stream,videoElement,(result)=>{
+          if(cameraSession!==cameraSessionRef.current)return;
           const completedDeepAttempt=reader.hints.has(DecodeHintType.TRY_HARDER);
           if(completedDeepAttempt)reader.hints.delete(DecodeHintType.TRY_HARDER);
           if(!result){
@@ -1113,10 +1142,23 @@ export default function Home() {
           failedScanAttempts=0;
           acceptDecodedBarcode(result.getText());
         });
+        if(cameraSession!==cameraSessionRef.current){
+          // ZXing also clears its preview when stopped; preserve a newer session using the same element.
+          const currentPreview=videoElement.srcObject;
+          controls.stop();
+          if(videoElement===videoRef.current&&currentPreview instanceof MediaStream&&currentPreview===cameraStreamRef.current&&currentPreview!==stream){
+            videoElement.srcObject=currentPreview;
+            void videoElement.play().catch(()=>undefined);
+          }
+          releaseCanceledStream();
+          return;
+        }
+        controlsRef.current=controls;
       };
 
       const nativeDetector=await androidBarcodeDetector();
-      if(nativeDetector&&cameraSession===cameraSessionRef.current){
+      if(cameraSession!==cameraSessionRef.current){releaseCanceledStream();return;}
+      if(nativeDetector){
         let stopped=false,nativeTimer=0,nativeFailures=0;
         const stopNative=()=>{stopped=true;if(nativeTimer)window.clearTimeout(nativeTimer);};
         controlsRef.current={stop:stopNative};
@@ -1125,33 +1167,26 @@ export default function Home() {
           if(stopped||cameraSession!==cameraSessionRef.current)return;
           try{
             const detected=await nativeDetector.detect(videoElement);
+            if(stopped||cameraSession!==cameraSessionRef.current)return;
             nativeFailures=0;
             if(detected[0]?.rawValue)acceptDecodedBarcode(detected[0].rawValue);
           }catch{
+            if(stopped||cameraSession!==cameraSessionRef.current)return;
             nativeFailures+=1;
             if(nativeFailures>=2){
               stopNative();
-              if(cameraSession===cameraSessionRef.current)await startZxingReader();
+              if(cameraSession===cameraSessionRef.current){
+                try{await startZxingReader();}catch(error){handleCameraError(error);}
+              }
               return;
             }
           }
-          if(!stopped)nativeTimer=window.setTimeout(()=>void scanNative(),35);
+          if(!stopped&&cameraSession===cameraSessionRef.current)nativeTimer=window.setTimeout(()=>void scanNative(),35);
         };
         window.requestAnimationFrame(()=>void scanNative());
       }else await startZxingReader();
     }
-    catch(error){
-      if(cameraSession!==cameraSessionRef.current)return;
-      releaseCameraStream();
-      setCameraOpen(false);
-      const name=error instanceof DOMException?error.name:"";
-      const description=name==="NotAllowedError"
-        ? "Permite el acceso a la cámara en el navegador y vuelve a intentarlo."
-        : name==="NotFoundError"
-          ? "No se encontró una cámara trasera disponible."
-          : "Cierra otras aplicaciones que usen la cámara y vuelve a intentarlo.";
-      toast.error("No se pudo abrir la cámara",{description});
-    }
+    catch(error){handleCameraError(error);}
   }
   function stopCamera(){cameraSessionRef.current+=1;releaseCameraStream();setCameraOpen(false);}
   function goTo(next:View){if(next==="daily"&&!canViewDaily)return;if(next==="users"&&!isOwner)return;stopCamera();if(next!==view){updateSizeGate(null);toast.dismiss("size-gate");}setView(next);setMobileMenu(false);}
