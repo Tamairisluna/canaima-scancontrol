@@ -1326,7 +1326,9 @@ export default function Home() {
   }
   async function deleteEvaluationItem(rowId:string){const {error}=await supabase.from("evaluation_items").delete().eq("id",rowId);if(error)return void toast.error("No se pudo eliminar");await supabase.from("scan_activity").delete().eq("evaluation_item_id",rowId);setEvaluationItems((items)=>items.filter((item)=>item.rowId!==rowId));}
 
-  const latestScannedEvaluationItem=useMemo(()=>evaluationItems.find((item)=>item.id!==null)??null,[evaluationItems]);
+  // Shared catalogs have no products-table ID; a saved barcode identifies a scanned item.
+  // Unidentified "Sin etiqueta" entries have no barcode and must not replace it.
+  const latestScannedEvaluationItem=useMemo(()=>evaluationItems.find((item)=>Boolean(item.barcode.trim()))??null,[evaluationItems]);
   async function markLatestScannedProduct(observation:Extract<Observation,"PRECIO ERRÓNEO"|"MAL ETIQUETADO">){
     if(!latestScannedEvaluationItem)return void toast.warning("Escanea un producto primero");
     if(await changeObservation(latestScannedEvaluationItem.rowId,observation))toast.success("Observación actualizada",{description:`${latestScannedEvaluationItem.article}: ${observation.toLocaleLowerCase("es")}.`});
