@@ -178,16 +178,16 @@ export function getImportErrorMessage(error: unknown) {
     return "Esta cuenta no tiene permiso para cargar el catálogo de la tienda seleccionada.";
   }
   if (normalized.includes("variant") && normalized.includes("column")) {
-    return "La estructura de productos de Supabase está desactualizada. Actualiza la base de datos e inténtalo de nuevo.";
+    return "No se pudo procesar este inventario. Contacta al encargado e inténtalo nuevamente.";
   }
   if ((normalized.includes("brand") || normalized.includes("category")) && normalized.includes("column")) {
-    return "Activa primero la actualización de Registro diario en Supabase para importar Marca y Cat 1.";
+    return "No se pudieron importar Marca y Cat 1. Contacta al encargado.";
   }
   if (normalized.includes("discount_percent") && normalized.includes("column")) {
-    return "Activa primero la actualización de descuento en Supabase e inténtalo nuevamente.";
+    return "No se pudieron importar los descuentos. Contacta al encargado.";
   }
   if (normalized.includes("carga bloqueada de forma preventiva") || normalized.includes("capacidad segura")) {
-    return "La carga se detuvo antes de ocupar el espacio de seguridad de Supabase. El inventario activo sigue funcionando; libera espacio o reduce el Excel antes de reintentar.";
+    return "No hay espacio suficiente para completar la carga. El inventario activo sigue funcionando; informa al encargado antes de reintentar.";
   }
   if (normalized.includes("failed to fetch") || normalized.includes("network")) {
     return "Se perdió la conexión durante la carga. Comprueba internet e inténtalo nuevamente.";

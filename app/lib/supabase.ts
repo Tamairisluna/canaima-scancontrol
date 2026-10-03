@@ -23,3 +23,14 @@ export const createProvisioningClient = () => createClient(supabaseUrl, supabase
     detectSessionInUrl: false,
   },
 });
+
+// Public store directory must not inherit an expired session from this device.
+let registrationDirectoryClient: typeof supabase | undefined;
+export const getRegistrationDirectoryClient = () => registrationDirectoryClient ??= createClient(supabaseUrl, supabasePublishableKey, {
+  auth: {
+    storageKey: "scancontrol-registration-directory",
+    persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
+  },
+});

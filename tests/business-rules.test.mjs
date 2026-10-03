@@ -299,7 +299,9 @@ test("keeps public registration store-bound and always employee-controlled", asy
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const migration = await readFile(new URL("../SUPABASE_CAMBIOS_PRIORITARIOS.sql", import.meta.url), "utf8");
 
-  assert.match(page, /supabase\.rpc\("registration_stores_by_city"\)/);
+  const registration = await readFile(new URL("../app/lib/registration.ts", import.meta.url), "utf8");
+  assert.match(registration, /client\.rpc\("registration_stores_by_city"\)/);
+  assert.match(page, /await loadRegistrationStores\(\)/);
   assert.match(page, /options:\{data:\{full_name:fullName,store_id:signupForm\.storeId\}\}/);
   assert.doesNotMatch(page, /options:\{data:\{full_name:fullName,store_id:signupForm\.storeId,role:/);
   assert.match(migration, /jsonb_build_object\('role', 'employee'\)/);

@@ -5,7 +5,7 @@ import type { CatalogImportProduct } from "@/app/lib/catalog-import";
 
 const BUCKET = "scancontrol-catalogs";
 const COLUMNS = "store_id,version,object_path,file_name,row_count,compressed_bytes,sha256,updated_at";
-const setupMessage = "Falta activar los catálogos compartidos en Supabase con el SQL de esta versión. El inventario anterior sigue disponible.";
+const setupMessage = "No se pudo acceder al catálogo compartido. El inventario anterior sigue disponible; inténtalo nuevamente o contacta al encargado.";
 
 export async function getSharedCatalog(storeId: string): Promise<{ available: boolean; meta: SharedCatalogMeta | null }> {
   const { data, error } = await supabase.from("store_catalog_files").select(COLUMNS).eq("store_id", storeId).maybeSingle();
