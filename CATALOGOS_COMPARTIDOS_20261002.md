@@ -46,6 +46,8 @@ La revisión `REVISAR_LIMPIEZA_CATALOGOS_20261003.sql` no modifica datos. Tras r
 
 El mismo bloque devuelve conteos antes/después y actividad por tienda. Clasifica para revisión las tiendas que tengan productos antiguos y siete días sin escaneos, evaluaciones, accesos de empleados/gerentes, cuentas nuevas ni cargas; cualquier `uploading` protege la tienda. Ese listado es una lectura: no elimina todavía los inventarios de esas tiendas. Una posterior limpieza requiere revisar el listado y revalidar la actividad al ejecutar cada lote. Los historiales y asignaciones se conservan. No se instala una caducidad automática de tiendas ni se ejecuta `VACUUM FULL` en estos bloques.
 
+Tras confirmar ese resultado, `LIMPIAR_TIENDAS_SIN_USO_20261003.sql` prepara la limpieza de las diez tiendas revisadas (189.966 productos), revalidando actividad/cargas y conservando cualquier archivo compartido. La instalación no borra inventarios; la llamada manual posterior retira los inventarios seleccionados y confirma lotes de hasta 5.000 filas con progreso reanudable. Las instrucciones y límites se documentan en `LIMPIEZA_TIENDAS_SIN_USO_20261003.md`. No se ha ejecutado en producción desde el conector administrativo.
+
 ## Respaldo y verificación
 
 Respaldo remoto: `backup/pre-shared-catalogs-20261002`, commit `e6807ab8933d80d540ea788194733410965260d5`. Para volver al flujo por dispositivo, publicar ese commit. La tabla y el bucket aditivos pueden permanecer; no hace falta borrar datos para restaurar el código.
