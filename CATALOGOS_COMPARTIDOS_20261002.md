@@ -42,6 +42,10 @@ from storage.objects where bucket_id = 'scancontrol-catalogs';
 
 No se borran los catálogos históricos de Postgres en este cambio. Una limpieza posterior podrá liberar ese espacio después de comprobar que cada tienda dispone de su catálogo compartido.
 
+La revisión `REVISAR_LIMPIEZA_CATALOGOS_20261003.sql` no modifica datos. Tras revisar sus relaciones y triggers, `LIMPIAR_ARCHIVADOS_Y_REVISAR_USO_20261003.sql` retira un lote de hasta 200 versiones `archived` anteriores a 24 horas, siempre que ningún `stores.active_catalog_id` las señale, con un máximo de 2.000 productos. Utiliza bloqueos de filas con `SKIP LOCKED` y límites de tiempo; ante dependencias nuevas, lote excesivo o cambios de estado revierte la transacción completa. Conserva todos los `active`, `ready`, `uploading` y los archivos compartidos.
+
+El mismo bloque devuelve conteos antes/después y actividad por tienda. Clasifica para revisión las tiendas que tengan productos antiguos y siete días sin escaneos, evaluaciones, accesos de empleados/gerentes, cuentas nuevas ni cargas; cualquier `uploading` protege la tienda. Ese listado es una lectura: no elimina todavía los inventarios de esas tiendas. Una posterior limpieza requiere revisar el listado y revalidar la actividad al ejecutar cada lote. Los historiales y asignaciones se conservan. No se instala una caducidad automática de tiendas ni se ejecuta `VACUUM FULL` en estos bloques.
+
 ## Respaldo y verificación
 
 Respaldo remoto: `backup/pre-shared-catalogs-20261002`, commit `e6807ab8933d80d540ea788194733410965260d5`. Para volver al flujo por dispositivo, publicar ese commit. La tabla y el bucket aditivos pueden permanecer; no hace falta borrar datos para restaurar el código.
