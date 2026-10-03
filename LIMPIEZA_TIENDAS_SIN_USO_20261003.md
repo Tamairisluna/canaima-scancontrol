@@ -54,3 +54,22 @@ Las cargas nuevas ya usan un archivo comprimido por tienda en Storage y una fila
 - Ejecución/timeout de pg-meta (consultado el 3 de octubre de 2026): https://github.com/supabase/postgres-meta/blob/master/src/lib/db.ts
 
 Fuente de conteos: CSV entregado por el usuario, `Supabase Snippet Untitled query (7).csv`, apartados `01_lote_archivado`, `02_uso_por_tienda`, `03_base_actual`. Los scripts se guardan en una rama de limpieza; no requieren publicar cambios de aplicación en Vercel.
+
+## Resultado confirmado en producción
+
+El usuario ejecutó la instalación y la llamada desde SQL Editor. La captura `image(20261003-043414).png`, entregada el 3 de octubre de 2026 a las 00:34 de Santo Domingo, confirma:
+
+| Comprobación | Resultado |
+| --- | ---: |
+| Productos antes | 189.966 |
+| Productos eliminados | 189.966 |
+| Tiendas completas | 10 |
+| Tiendas protegidas | 0 |
+| Tiendas pendientes | 0 |
+| Productos pendientes en las versiones retiradas | 0 |
+| Catálogos pendientes en las versiones retiradas | 0 |
+| Tamaño físico informado | 452 MB |
+
+La eliminación seleccionada está completa. El tamaño informado bajó de 472 MB a 452 MB; la lectura no identifica qué mantenimiento interno produjo la reducción. No se ha ejecutado `VACUUM FULL`.
+
+Como mantenimiento posterior, `PASO_3_MANTENIMIENTO_NORMAL_20261003.sql` contiene una sola instrucción VACUUM normal sobre `public.products`, con ANALYZE, sin truncado exclusivo y sin esperar un bloqueo inicial conflictivo. Se ejecuta sola en una consulta nueva. Deja reutilizable espacio dentro de esa tabla y actualiza estadísticas; no garantiza que el tamaño físico baje más. Su ejecución y resultado aún están pendientes de confirmación del usuario.
